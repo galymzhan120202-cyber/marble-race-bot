@@ -464,14 +464,15 @@ def pick_theme(seed):
 # --- Geometry helper -------------------------------------------------------
 
 class MazeGeometry:
-    def __init__(self, w, cols, rows):
+    def __init__(self, w, cols, rows, has_finish=True):
         self.cols, self.rows = cols, rows
         self.border_w = w * 0.045
         self.cell = (w - 2 * self.border_w) / cols
         self.wall_thickness = self.cell * 0.30
         self.racer_radius = (self.cell - self.wall_thickness) * 0.30
         self.top_border = self.border_w
-        self.finish_depth = self.cell * 1.3
+        self.has_finish = has_finish
+        self.finish_depth = self.cell * 1.3 if has_finish else 0
         self.bottom_border = self.border_w
         self.w = w
         self.img_h = self.top_border + rows * self.cell + self.finish_depth + self.bottom_border
@@ -492,6 +493,8 @@ class MazeGeometry:
 
 
 def build_wall_segments(geo, open_right, open_down, finish_col):
+    """finish_col=None (battle mode's closed arena, no finish zone) closes the
+    bottom off like a normal wall instead of leaving a finish-zone gap."""
     cols, rows, cell = geo.cols, geo.rows, geo.cell
     left = geo.border_w
     right = geo.w - geo.border_w
@@ -499,21 +502,23 @@ def build_wall_segments(geo, open_right, open_down, finish_col):
     bottom = geo.top_border + rows * cell
     zone_bottom = bottom + geo.finish_depth
 
-    segs = [(left, top), (right, top)]  # top boundary (single segment via pairs list below)
     segments = [((left, top), (right, top))]
 
-    finish_x0 = geo.cell_left(finish_col)
-    finish_x1 = finish_x0 + cell
-    if finish_x0 > left:
-        segments.append(((left, bottom), (finish_x0, bottom)))
-    if finish_x1 < right:
-        segments.append(((finish_x1, bottom), (right, bottom)))
+    if finish_col is not None:
+        finish_x0 = geo.cell_left(finish_col)
+        finish_x1 = finish_x0 + cell
+        if finish_x0 > left:
+            segments.append(((left, bottom), (finish_x0, bottom)))
+        if finish_x1 < right:
+            segments.append(((finish_x1, bottom), (right, bottom)))
+        segments.append(((left, bottom), (left, zone_bottom)))
+        segments.append(((right, bottom), (right, zone_bottom)))
+        segments.append(((left, zone_bottom), (right, zone_bottom)))
+    else:
+        segments.append(((left, bottom), (right, bottom)))
 
     segments.append(((left, top), (left, bottom)))
     segments.append(((right, top), (right, bottom)))
-    segments.append(((left, bottom), (left, zone_bottom)))
-    segments.append(((right, bottom), (right, zone_bottom)))
-    segments.append(((left, zone_bottom), (right, zone_bottom)))
 
     for r in range(rows):
         for c in range(cols - 1):
@@ -560,31 +565,32 @@ def draw_maze_background(geo, open_right, open_down, finish_col, theme):
             yy += tile
             row_i += 1
 
-    # finish zone: green pad + checker stripe
-    d.rectangle([left, bottom, right, zone_bottom], fill=(60, 180, 90, 255))
-    stripe_h = geo.finish_depth * 0.30
-    stripe_y = bottom + geo.finish_depth * 0.30
-    tile2 = geo.cell / 6
-    xx = left
-    col_i = 0
-    while xx < right:
-        color = (250, 250, 250) if col_i % 2 == 0 else (30, 30, 34)
-        d.rectangle([xx, stripe_y, min(xx + tile2, right), stripe_y + stripe_h], fill=(*color, 255))
-        xx += tile2
-        col_i += 1
-    fin_font = get_font(int(geo.cell * 0.32))
-    ftext = "FINISH"
-    ftw = d.textlength(ftext, font=fin_font)
-    d.text((left + (right - left) / 2 - ftw / 2, bottom + geo.finish_depth * 0.66), ftext,
-           font=fin_font, fill=(255, 255, 255, 255), stroke_width=3, stroke_fill=(0, 0, 0, 255))
+    if finish_col is not None:
+        # finish zone: green pad + checker stripe
+        d.rectangle([left, bottom, right, zone_bottom], fill=(60, 180, 90, 255))
+        stripe_h = geo.finish_depth * 0.30
+        stripe_y = bottom + geo.finish_depth * 0.30
+        tile2 = geo.cell / 6
+        xx = left
+        col_i = 0
+        while xx < right:
+            color = (250, 250, 250) if col_i % 2 == 0 else (30, 30, 34)
+            d.rectangle([xx, stripe_y, min(xx + tile2, right), stripe_y + stripe_h], fill=(*color, 255))
+            xx += tile2
+            col_i += 1
+        fin_font = get_font(int(geo.cell * 0.32))
+        ftext = "FINISH"
+        ftw = d.textlength(ftext, font=fin_font)
+        d.text((left + (right - left) / 2 - ftw / 2, bottom + geo.finish_depth * 0.66), ftext,
+               font=fin_font, fill=(255, 255, 255, 255), stroke_width=3, stroke_fill=(0, 0, 0, 255))
 
-    # start stripe
-    start_font = get_font(int(geo.cell * 0.26))
-    stext = "START"
-    stw = d.textlength(stext, font=start_font)
-    d.rectangle([left, top - geo.border_w * 0.55, right, top], fill=(*theme["accent"], 90))
-    d.text((left + (right - left) / 2 - stw / 2, top - geo.border_w * 0.5), stext,
-           font=start_font, fill=(20, 20, 24, 255))
+        # start stripe
+        start_font = get_font(int(geo.cell * 0.26))
+        stext = "START"
+        stw = d.textlength(stext, font=start_font)
+        d.rectangle([left, top - geo.border_w * 0.55, right, top], fill=(*theme["accent"], 90))
+        d.text((left + (right - left) / 2 - stw / 2, top - geo.border_w * 0.5), stext,
+               font=start_font, fill=(20, 20, 24, 255))
 
     # Walls drawn as flat filled rectangles (axis-aligned, since every
     # segment from build_wall_segments is purely horizontal or vertical),
@@ -622,11 +628,41 @@ def _make_ambient_particles(seed, count, w, h):
 
 # --- Racer icon ------------------------------------------------------------
 
-def make_racer_icon(color, size=90):
-    """A small rounded square with a cute two-dot face and a triangular
-    'pennant' nub on its front edge, drawn facing local 'up' — the whole
-    icon is rotated per-frame to face the racer's current travel direction,
-    the same way weapon-ball rotates its weapon icons by body.angle."""
+def _star_points(cx, cy, r_outer, r_inner, points=5, rotation=-90):
+    """Vertex list for a regular N-point star, used for both the standalone
+    weapon pickup icon and the smaller 'armed' badge — one shape, two sizes,
+    so a battle-mode racer's weapon state reads instantly without borrowing
+    any specific weapon silhouette (knife/shield/etc.) from a reference."""
+    pts = []
+    for i in range(points * 2):
+        ang = math.radians(rotation + i * 180 / points)
+        r = r_outer if i % 2 == 0 else r_inner
+        pts.append((cx + r * math.cos(ang), cy + r * math.sin(ang)))
+    return pts
+
+
+def _make_weapon_icon(size=48, color=(255, 200, 40)):
+    """Standalone weapon-pickup icon for battle mode: a flat gold star with
+    a dark outline, matching make_racer_icon's flat-cel-shaded construction
+    (solid fill + bold outline, no gradients) so it reads as part of the
+    same visual system as the racers and maze."""
+    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img, "RGBA")
+    dark = tuple(max(0, c - 90) for c in color)
+    cx = cy = size / 2
+    d.polygon(_star_points(cx, cy, size * 0.46, size * 0.19), fill=(*color, 255),
+              outline=(*dark, 255), width=max(2, int(size * 0.06)))
+    return img
+
+
+def make_racer_icon(color, size=90, armed=False):
+    """A small flat-shaded rounded square with a bold Geometry-Dash-cube-
+    style face (thick angled brows + plain dot eyes, no sheen/direction
+    nub) — mirrors the reference mascot the user pointed to: one solid
+    flat body color, a bold dark outline, and the brows/eyes alone reading
+    as 'front' once the icon is rotated per-frame to face travel direction.
+    `armed` (battle mode) adds a small star badge at the top-right corner so
+    a racer's weapon state is readable at a glance without extra HUD text."""
     img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     d = ImageDraw.Draw(img, "RGBA")
     cx = size / 2
@@ -643,33 +679,29 @@ def make_racer_icon(color, size=90):
     img.paste(shadow, (int(size * 0.05), int(size * 0.06)), shadow)
 
     dark = tuple(max(0, c - 55) for c in color)
-    light = tuple(min(255, c + 45) for c in color)
 
     d.rounded_rectangle([body_left, body_top, body_right, body_bottom], radius=size * 0.16, fill=(*color, 255),
-                         outline=(*dark, 255), width=max(2, int(size * 0.035)))
-    # diagonal sheen
-    d.polygon([(body_left, body_top), (body_right * 0.6, body_top), (body_left, body_bottom * 0.5)],
-              fill=(*light, 110))
-    # front direction nub — a solid tint of the racer's OWN color (not a
-    # fixed tone unrelated to it, which is what made this read as a muddy
-    # gray/olive scrap clashing with the body) plus a crisp opaque outline,
-    # drawn on the explicit "RGBA" draw context above so it composites fully
-    # opaque instead of blending translucently with whatever's beneath it.
-    nub_fill = tuple(min(255, c + 70) for c in color)
-    d.polygon([(cx - size * 0.11, body_top + size * 0.01), (cx + size * 0.11, body_top + size * 0.01),
-               (cx, pad * 0.05)], fill=(*nub_fill, 255), outline=(*dark, 255), width=max(1, int(size * 0.02)))
-    # eyes
-    eye_y = body_top + (body_bottom - body_top) * 0.38
+                         outline=(*dark, 255), width=max(3, int(size * 0.05)))
+
+    face_dark = (30, 26, 20, 255)
+    eye_y = body_top + (body_bottom - body_top) * 0.42
+    brow_w = max(2, int(size * 0.045))
     for dx in (-0.16, 0.16):
         ex = cx + size * dx
-        d.ellipse([ex - size * 0.075, eye_y - size * 0.075, ex + size * 0.075, eye_y + size * 0.075],
-                  fill=(255, 255, 255, 255))
-        d.ellipse([ex - size * 0.035, eye_y - size * 0.02, ex + size * 0.035, eye_y + size * 0.05],
-                  fill=(20, 20, 22, 255))
-    # smile
-    mouth_y = body_top + (body_bottom - body_top) * 0.64
-    d.arc([cx - size * 0.14, mouth_y - size * 0.10, cx + size * 0.14, mouth_y + size * 0.12], start=20, end=160,
-          fill=(20, 20, 22, 220), width=max(2, int(size * 0.03)))
+        side = 1 if dx > 0 else -1
+        # thick angled brow, slanting down toward the center for a focused/
+        # determined look instead of the old single arched unibrow
+        d.line([(ex - side * size * 0.09, eye_y - size * 0.16), (ex + side * size * 0.07, eye_y - size * 0.08)],
+               fill=face_dark, width=brow_w)
+        d.ellipse([ex - size * 0.06, eye_y - size * 0.06, ex + size * 0.06, eye_y + size * 0.06], fill=face_dark)
+    # small closed mouth line instead of a curved smile
+    mouth_y = body_top + (body_bottom - body_top) * 0.68
+    d.line([(cx - size * 0.08, mouth_y), (cx + size * 0.08, mouth_y)], fill=face_dark, width=max(2, int(size * 0.03)))
+
+    if armed:
+        bx, by = body_right - size * 0.08, body_top + size * 0.08
+        d.polygon(_star_points(bx, by, size * 0.15, size * 0.06), fill=(255, 200, 40, 255),
+                   outline=(90, 60, 0, 255), width=max(1, int(size * 0.02)))
     return img
 
 
@@ -1062,9 +1094,571 @@ def simulate_race(w, h, seed, fps=24, max_seconds=28, min_seconds=13, n_racers=N
     }
 
 
+# --- Battle mode: shrinking-zone elimination arena --------------------------
+
+BATTLE_KNOCKBACK_IMPULSE = 950.0  # throw strength when a weapon lands a hit
+BATTLE_WALL_KILL_IMPULSE = 260.0  # impact strength vs a wall, while airborne, that's fatal
+BATTLE_FLYING_SECONDS = 0.5  # window after being thrown during which a hard wall hit eliminates
+BATTLE_ZONE_SHRINK_START_FRAC = 0.15  # of max_seconds: the closing walls start moving
+BATTLE_ZONE_SHRINK_END_FRAC = 0.85  # walls reach their final (minimum) position
+BATTLE_ZONE_MIN_HALF_WIDTH_CELLS = 1.5  # how narrow the left/right walls can close to
+BATTLE_ZONE_END_MARGIN_ROWS = 2  # rows of headroom always left above the finish
+
+
+def _place_pickups(open_right, open_down, cols, rows, rng, k):
+    """Scatter k weapon pickups on junction/room cells (>=2 open neighbors,
+    so they sit somewhere reachable from more than one direction), spread
+    apart via a greedy min-separation pick instead of pure random placement
+    so they don't cluster in one corner of the arena."""
+    candidates = [(r, c) for r in range(rows) for c in range(cols)
+                  if len(open_neighbors(r, c, open_right, open_down, cols, rows)) >= 2]
+    rng.shuffle(candidates)
+    min_sep = max(2, (cols + rows) // 6)
+    chosen = []
+    for (r, c) in candidates:
+        if all(abs(r - cr) + abs(c - cc) >= min_sep for (cr, cc) in chosen):
+            chosen.append((r, c))
+            if len(chosen) >= k:
+                break
+    if len(chosen) < k:
+        for cell in candidates:
+            if cell not in chosen:
+                chosen.append(cell)
+                if len(chosen) >= k:
+                    break
+    return chosen
+
+
+def simulate_battle(w, h, seed, fps=24, max_seconds=32, min_seconds=14, n_racers=None,
+                     cols=None, rows=None, forced_racers=None):
+    """Same procedural maze/physics/racer-icon system as simulate_race, and a
+    race-to-finish objective still at its heart, but under mounting pressure
+    from a closing arena: three kinematic 'zone' walls (top, left, right)
+    physically sweep inward over the match — a racer literally can't cross
+    one, and gets carried/squeezed along by it if caught against it — while
+    the bottom stays open onto the same finish zone simulate_race uses, so
+    the closing walls funnel everyone toward it instead of just shrinking to
+    a static center. Weapon pickups let an armed racer THROW an unarmed one
+    on collision (a strong knockback impulse, not a damage tick); slamming
+    into any wall while still airborne from a throw is what actually
+    eliminates a racer. First to the finish wins outright; if nobody makes
+    it, the last racer standing (or closest to the finish, on a time-out)
+    does."""
+    rng = random.Random(seed)
+    theme = pick_theme(seed)
+
+    if forced_racers is not None:
+        racers = [dict(r) for r in forced_racers]
+        n_racers = len(racers)
+    else:
+        if n_racers is None:
+            options = list(N_RACERS_WEIGHTS.keys())
+            weights = list(N_RACERS_WEIGHTS.values())
+            n_racers = rng.choices(options, weights=weights, k=1)[0]
+        racers = [dict(r) for r in rng.sample(RACER_POOL, n_racers)]
+    _boost_color_contrast(racers, rng)
+
+    border_w_est = w * 0.045
+    cols = cols if cols is not None else max(4, round((w - 2 * border_w_est) / TARGET_CELL_PX))
+    rows = rows if rows is not None else max(14, min(24, 18 + (n_racers - 6)))
+
+    geo = MazeGeometry(w, cols, rows, has_finish=True)
+    maze_rng = random.Random(hashlib.sha256((str(seed) + "maze").encode()).hexdigest())
+    structure_kind = pick_maze_structure(seed)
+    open_right, open_down = generate_structured_maze(structure_kind, cols, rows, maze_rng, n_racers)
+    finish_col = maze_rng.randrange(cols)
+    finish_cell = (rows - 1, finish_col)
+    dist_field = bfs_distance_field(open_right, open_down, cols, rows, finish_cell)
+    maze_img = draw_maze_background(geo, open_right, open_down, finish_col, theme)
+
+    left, right = geo.border_w, geo.w - geo.border_w
+    top, bottom = geo.top_border, geo.top_border + rows * geo.cell
+    zone_cx, zone_cy = (left + right) / 2, (top + bottom) / 2
+
+    shrink_start = BATTLE_ZONE_SHRINK_START_FRAC * max_seconds
+    shrink_end = BATTLE_ZONE_SHRINK_END_FRAC * max_seconds
+    shrink_dur = max(0.001, shrink_end - shrink_start)
+    top_end_y = bottom - geo.cell * BATTLE_ZONE_END_MARGIN_ROWS
+    half_w_start = (right - left) / 2
+    half_w_end = geo.cell * BATTLE_ZONE_MIN_HALF_WIDTH_CELLS
+
+    def _zone_state(t_now):
+        """Returns (top_y, left_x, right_x, vy, vx) for the three closing
+        walls at time t_now — position AND an analytic constant velocity,
+        so a racer caught against a wall is carried along by it (pymunk's
+        kinematic-vs-dynamic contact resolution uses the kinematic body's
+        velocity, not just its position delta)."""
+        frac = min(1.0, max(0.0, (t_now - shrink_start) / shrink_dur))
+        top_y = top + frac * (top_end_y - top)
+        half_w = half_w_start + frac * (half_w_end - half_w_start)
+        moving = shrink_start <= t_now <= shrink_end
+        vy = (top_end_y - top) / shrink_dur if moving else 0.0
+        vx = (half_w_end - half_w_start) / shrink_dur if moving else 0.0
+        return top_y, zone_cx - half_w, zone_cx + half_w, vy, vx
+
+    n_pickups = max(2, n_racers // 2)
+    pickup_cells = _place_pickups(open_right, open_down, cols, rows, maze_rng, n_pickups)
+    pickup_pos = [geo.cell_center(r, c) for (r, c) in pickup_cells]
+    pickup_collected = [False] * n_pickups
+    pickup_collect_step = [None] * n_pickups
+    PICKUP_RADIUS = geo.racer_radius * 1.3
+
+    space = pymunk.Space()
+    space.gravity = (0, 0)
+    space.damping = 0.996
+
+    for (p1, p2) in build_wall_segments(geo, open_right, open_down, finish_col):
+        seg = pymunk.Segment(space.static_body, p1, p2, geo.wall_thickness / 2)
+        seg.elasticity = 0.35
+        seg.friction = 0.5
+        seg.collision_type = WALL_TYPE
+        space.add(seg)
+
+    fzx, fzy = geo.finish_zone_center(finish_col)
+    finish_shape = pymunk.Circle(space.static_body, geo.cell * 0.55, offset=(fzx, fzy))
+    finish_shape.sensor = True
+    finish_shape.collision_type = FINISH_TYPE
+    space.add(finish_shape)
+
+    # Closing zone walls: three kinematic bodies (top, left, right — bottom
+    # stays open onto the finish). collision_type=WALL_TYPE so they get the
+    # same bump SFX/flash and the same "flying into a wall" elimination
+    # check as the maze's own static walls.
+    zone_span = max(right - left, bottom - top) * 1.2
+    top_wall_body = pymunk.Body(body_type=pymunk.Body.KINEMATIC)
+    top_wall_shape = pymunk.Segment(top_wall_body, (-zone_span / 2, 0), (zone_span / 2, 0), geo.wall_thickness / 2)
+    top_wall_shape.elasticity = 0.35
+    top_wall_shape.friction = 0.5
+    top_wall_shape.collision_type = WALL_TYPE
+    top_wall_body.position = (zone_cx, top)
+    space.add(top_wall_body, top_wall_shape)
+
+    left_wall_body = pymunk.Body(body_type=pymunk.Body.KINEMATIC)
+    left_wall_shape = pymunk.Segment(left_wall_body, (0, -(bottom - top) / 2), (0, (bottom - top) / 2),
+                                      geo.wall_thickness / 2)
+    left_wall_shape.elasticity = 0.35
+    left_wall_shape.friction = 0.5
+    left_wall_shape.collision_type = WALL_TYPE
+    left_wall_body.position = (left, zone_cy)
+    space.add(left_wall_body, left_wall_shape)
+
+    right_wall_body = pymunk.Body(body_type=pymunk.Body.KINEMATIC)
+    right_wall_shape = pymunk.Segment(right_wall_body, (0, -(bottom - top) / 2), (0, (bottom - top) / 2),
+                                       geo.wall_thickness / 2)
+    right_wall_shape.elasticity = 0.35
+    right_wall_shape.friction = 0.5
+    right_wall_shape.collision_type = WALL_TYPE
+    right_wall_body.position = (right, zone_cy)
+    space.add(right_wall_body, right_wall_shape)
+
+    bodies, shapes = [], []
+    for i in range(n_racers):
+        start_r, start_c = i // cols, i % cols
+        cx, cy = geo.cell_center(start_r, start_c)
+        jx, jy = rng.uniform(-6, 6), rng.uniform(-6, 6)
+        mass = racers[i]["weight"]
+        body = pymunk.Body(mass=mass, moment=pymunk.moment_for_circle(mass, 0, geo.racer_radius))
+        body.position = (cx + jx, cy + jy)
+        shape = pymunk.Circle(body, geo.racer_radius)
+        shape.elasticity = 0.5
+        shape.friction = 0.35
+        shape.collision_type = RACER_TYPE_BASE + i
+        space.add(body, shape)
+        bodies.append(body)
+        shapes.append(shape)
+
+    armed = [False] * n_racers
+    finished = [False] * n_racers
+    eliminated = [False] * n_racers
+    active = [True] * n_racers
+    flying_until = [0] * n_racers
+    last_cell = [(i // cols, i % cols) for i in range(n_racers)]
+    target = [geo.cell_center(*last_cell[i]) for i in range(n_racers)]
+    winner_idx_box = [None]
+    finish_log = []  # (step, racer_idx, x, y)
+    elim_log = []  # (step, racer_idx, x, y)
+    bump_log = []
+    step_counter = {"n": 0}
+    per_racer_rng = [random.Random(hashlib.sha256((str(seed) + f"racer{i}").encode()).hexdigest()) for i in range(n_racers)]
+
+    RECOVERY_STEPS = int(0.30 * PHYSICS_HZ)
+    RECOVERY_MIN_STEER_MULT = 0.12
+    recovery_until = [0] * n_racers
+    DECISION_STEPS = int(0.5 * PHYSICS_HZ)
+    next_decision = [0] * n_racers
+    JUNCTION_HESITATE_STEPS = int(0.15 * PHYSICS_HZ)
+
+    STUCK_CHECK_STEPS = int(0.5 * PHYSICS_HZ)
+    STUCK_LIMIT = 3
+    stuck_dist_threshold = geo.racer_radius * 0.7
+    stuck_check_pos = [None] * n_racers
+    stuck_counters = [0] * n_racers
+
+    AWARENESS_PICKUP = geo.cell * 6
+    DANGER_RADIUS = geo.cell * 4
+    AWARENESS_CHASE = geo.cell * 6
+
+    def _greedy_step(candidates, point, maximize=False):
+        def key(n):
+            px, py = geo.cell_center(*n)
+            return math.hypot(px - point[0], py - point[1])
+        return (max if maximize else min)(candidates, key=key)
+
+    def _eliminate(i, step):
+        if eliminated[i] or finished[i]:
+            return
+        eliminated[i] = True
+        active[i] = False
+        pos = bodies[i].position
+        elim_log.append((step, i, pos.x, pos.y))
+
+    def _battle_recompute_target(i):
+        """Same shape as simulate_race's _recompute_target (returns True on
+        a real fork, for junction hesitation), but the target priority is
+        battle-specific: seek a pickup when unarmed, chase the nearest foe
+        when armed, flee an armed foe when unarmed and threatened, else fall
+        back to the exact same finish-seeking flood-fill race mode uses."""
+        r, c = last_cell[i]
+        if (r, c) == finish_cell:
+            target[i] = (fzx, fzy)
+            return False
+        candidates = open_neighbors(r, c, open_right, open_down, cols, rows)
+        if not candidates:
+            return False
+        x, y = bodies[i].position
+
+        if not armed[i]:
+            best_pickup, best_d = None, AWARENESS_PICKUP
+            for k in range(n_pickups):
+                if pickup_collected[k]:
+                    continue
+                d = math.hypot(pickup_pos[k][0] - x, pickup_pos[k][1] - y)
+                if d < best_d:
+                    best_pickup, best_d = pickup_pos[k], d
+            if best_pickup is not None:
+                target[i] = geo.cell_center(*_greedy_step(candidates, best_pickup))
+                return len(candidates) > 1
+            best_enemy, best_d = None, DANGER_RADIUS
+            for j in range(n_racers):
+                if j == i or not active[j] or not armed[j]:
+                    continue
+                epos = bodies[j].position
+                d = math.hypot(epos.x - x, epos.y - y)
+                if d < best_d:
+                    best_enemy, best_d = (epos.x, epos.y), d
+            if best_enemy is not None:
+                target[i] = geo.cell_center(*_greedy_step(candidates, best_enemy, maximize=True))
+                return len(candidates) > 1
+        else:
+            best_enemy, best_d = None, AWARENESS_CHASE
+            for j in range(n_racers):
+                if j == i or not active[j]:
+                    continue
+                epos = bodies[j].position
+                d = math.hypot(epos.x - x, epos.y - y)
+                if d < best_d:
+                    best_enemy, best_d = (epos.x, epos.y), d
+            if best_enemy is not None:
+                target[i] = geo.cell_center(*_greedy_step(candidates, best_enemy))
+                return len(candidates) > 1
+
+        best = min(dist_field[nr][nc] for (nr, nc) in candidates)
+        best_candidates = [n for n in candidates if dist_field[n[0]][n[1]] == best]
+        prng = per_racer_rng[i]
+        if len(candidates) > 1 and prng.random() < racers[i]["confusion"]:
+            choice = candidates[prng.randrange(len(candidates))]
+        else:
+            choice = best_candidates[prng.randrange(len(best_candidates))]
+        target[i] = geo.cell_center(*choice)
+        return len(candidates) > 1
+
+    def on_begin(arbiter, space_, data):
+        ct1, ct2 = arbiter.shapes[0].collision_type, arbiter.shapes[1].collision_type
+        if FINISH_TYPE in (ct1, ct2):
+            other = ct2 if ct1 == FINISH_TYPE else ct1
+            idx = other - RACER_TYPE_BASE
+            if 0 <= idx < n_racers and not finished[idx] and not eliminated[idx]:
+                finished[idx] = True
+                active[idx] = False
+                finish_log.append((step_counter["n"], idx, bodies[idx].position.x, bodies[idx].position.y))
+                if winner_idx_box[0] is None:
+                    winner_idx_box[0] = idx
+        return True
+
+    RACER_VS_RACER_ELASTICITY = 0.92
+
+    def on_pre_solve(arbiter, space_, data):
+        ct1, ct2 = arbiter.shapes[0].collision_type, arbiter.shapes[1].collision_type
+        if ct1 >= RACER_TYPE_BASE and ct2 >= RACER_TYPE_BASE:
+            arbiter.elasticity = RACER_VS_RACER_ELASTICITY
+        return True
+
+    def _throw(loser_i, from_pos):
+        lp = bodies[loser_i].position
+        dx, dy = lp.x - from_pos.x, lp.y - from_pos.y
+        dist = math.hypot(dx, dy) or 1.0
+        bodies[loser_i].apply_impulse_at_world_point(
+            (dx / dist * BATTLE_KNOCKBACK_IMPULSE, dy / dist * BATTLE_KNOCKBACK_IMPULSE), lp)
+        flying_until[loser_i] = step_counter["n"] + int(BATTLE_FLYING_SECONDS * PHYSICS_HZ)
+
+    def on_post_solve(arbiter, space_, data):
+        ct1, ct2 = arbiter.shapes[0].collision_type, arbiter.shapes[1].collision_type
+        impulse = arbiter.total_impulse.length
+        if impulse < 0.5:
+            return
+        cps = arbiter.contact_point_set.points
+        if not cps:
+            return
+        cx_, cy_ = cps[0].point_a.x, cps[0].point_a.y
+        intensity = min(1.0, impulse / 400.0)
+
+        if ct1 == WALL_TYPE or ct2 == WALL_TYPE:
+            if len(bump_log) < 4000:
+                bump_log.append((step_counter["n"], cx_, cy_, intensity, "wall"))
+            other = ct2 if ct1 == WALL_TYPE else ct1
+            idx = other - RACER_TYPE_BASE
+            if (0 <= idx < n_racers and active[idx] and step_counter["n"] < flying_until[idx]
+                    and impulse > BATTLE_WALL_KILL_IMPULSE):
+                _eliminate(idx, step_counter["n"])
+
+        elif ct1 >= RACER_TYPE_BASE and ct2 >= RACER_TYPE_BASE:
+            if len(bump_log) < 4000:
+                bump_log.append((step_counter["n"], cx_, cy_, intensity, "racer"))
+            if impulse > 15.0:
+                i1, i2 = ct1 - RACER_TYPE_BASE, ct2 - RACER_TYPE_BASE
+                until = step_counter["n"] + RECOVERY_STEPS
+                if 0 <= i1 < n_racers:
+                    recovery_until[i1] = max(recovery_until[i1], until)
+                if 0 <= i2 < n_racers:
+                    recovery_until[i2] = max(recovery_until[i2], until)
+                if 0 <= i1 < n_racers and 0 <= i2 < n_racers and active[i1] and active[i2]:
+                    a1, a2 = armed[i1], armed[i2]
+                    p1, p2 = bodies[i1].position, bodies[i2].position
+                    if a1 and not a2:
+                        armed[i1] = False
+                        _throw(i2, p1)
+                    elif a2 and not a1:
+                        armed[i2] = False
+                        _throw(i1, p2)
+                    elif a1 and a2:
+                        armed[i1] = False
+                        armed[i2] = False
+                        _throw(i2, p1)
+                        _throw(i1, p2)
+
+    space.on_collision(begin=on_begin, pre_solve=on_pre_solve, post_solve=on_post_solve)
+
+    for i in range(n_racers):
+        _battle_recompute_target(i)
+
+    dt = 1.0 / PHYSICS_HZ
+    steps_per_frame = max(1, PHYSICS_HZ // fps)
+    max_steps = int(max_seconds * PHYSICS_HZ)
+    min_steps = int(min_seconds * PHYSICS_HZ)
+
+    MAX_SPEED = geo.cell / 0.42
+    STEER_GAIN = 7.5
+    SLOWDOWN_RADIUS = geo.cell * 0.55
+    JITTER_HZ_SCALE = 3.0
+
+    speed_mult = [1.0 + (1.0 - racers[i]["weight"]) * 0.6 for i in range(n_racers)]
+    steer_mult = [1.0 - (racers[i]["weight"] - 1.0) * 0.5 for i in range(n_racers)]
+
+    frames = []
+    finish_frame_flags = {}
+    elim_frame_flags = {}
+    bump_frame_flags = {}
+    frame_idx = 0
+
+    while step_counter["n"] < max_steps:
+        step_counter["n"] += 1
+        t_now = step_counter["n"] * dt
+
+        top_y, s_left, s_right, vy, vx = _zone_state(t_now)
+        top_wall_body.position = (zone_cx, top_y)
+        top_wall_body.velocity = (0, vy)
+        left_wall_body.position = (s_left, zone_cy)
+        left_wall_body.velocity = (vx, 0)
+        right_wall_body.position = (s_right, zone_cy)
+        right_wall_body.velocity = (-vx, 0)
+
+        for i in range(n_racers):
+            if not active[i]:
+                continue
+            x, y = bodies[i].position
+
+            if not armed[i]:
+                for k in range(n_pickups):
+                    if pickup_collected[k]:
+                        continue
+                    if math.hypot(pickup_pos[k][0] - x, pickup_pos[k][1] - y) < PICKUP_RADIUS:
+                        armed[i] = True
+                        pickup_collected[k] = True
+                        pickup_collect_step[k] = step_counter["n"]
+                        break
+
+            c = min(cols - 1, max(0, int((x - geo.border_w) / geo.cell)))
+            r = min(rows - 1, max(0, int((y - geo.top_border) / geo.cell)))
+            r = min(r, rows - 1)
+            if (r, c) != last_cell[i] and y < geo.top_border + rows * geo.cell:
+                last_cell[i] = (r, c)
+                if _battle_recompute_target(i):
+                    until = step_counter["n"] + JUNCTION_HESITATE_STEPS
+                    recovery_until[i] = max(recovery_until[i], until)
+                next_decision[i] = step_counter["n"] + DECISION_STEPS
+            elif last_cell[i] == finish_cell:
+                target[i] = (fzx, fzy)
+            elif step_counter["n"] >= next_decision[i]:
+                _battle_recompute_target(i)
+                next_decision[i] = step_counter["n"] + DECISION_STEPS
+
+            tx, ty = target[i]
+            dx, dy = tx - x, ty - y
+            dist = math.hypot(dx, dy) or 1.0
+            speed_scale = min(1.0, max(0.35, dist / SLOWDOWN_RADIUS))
+            desired_vx = dx / dist * MAX_SPEED * speed_mult[i] * speed_scale
+            desired_vy = dy / dist * MAX_SPEED * speed_mult[i] * speed_scale
+            vx_, vy_ = bodies[i].velocity
+            steer_gain = STEER_GAIN * steer_mult[i]
+            if step_counter["n"] < recovery_until[i]:
+                remaining = (recovery_until[i] - step_counter["n"]) / RECOVERY_STEPS
+                steer_gain *= RECOVERY_MIN_STEER_MULT + (1 - RECOVERY_MIN_STEER_MULT) * (1 - remaining)
+            steer_x = (desired_vx - vx_) * steer_gain
+            steer_y = (desired_vy - vy_) * steer_gain
+            mass = racers[i]["weight"]
+            jr = per_racer_rng[i]
+            jitter_ang = math.sin(t_now * JITTER_HZ_SCALE + i * 1.7) * jr.uniform(0.5, 1.0)
+            jitter_mag = mass * 60
+            fx = mass * steer_x + math.cos(jitter_ang) * jitter_mag
+            fy = mass * steer_y + math.sin(jitter_ang) * jitter_mag
+            bodies[i].apply_force_at_world_point((fx, fy), bodies[i].position)
+
+        space.step(dt)
+
+        if step_counter["n"] % STUCK_CHECK_STEPS == 0:
+            for i in range(n_racers):
+                if not active[i]:
+                    continue
+                pos_now = bodies[i].position
+                prev = stuck_check_pos[i]
+                stuck_check_pos[i] = (pos_now.x, pos_now.y)
+                if prev is None:
+                    continue
+                moved = math.hypot(pos_now.x - prev[0], pos_now.y - prev[1])
+                if moved < stuck_dist_threshold:
+                    stuck_counters[i] += 1
+                else:
+                    stuck_counters[i] = 0
+                if stuck_counters[i] >= STUCK_LIMIT:
+                    tx, ty = target[i]
+                    ddx, ddy = tx - pos_now.x, ty - pos_now.y
+                    ddist = math.hypot(ddx, ddy) or 1.0
+                    nudge = MAX_SPEED * racers[i]["weight"] * 1.4
+                    bodies[i].apply_impulse_at_world_point(
+                        (ddx / ddist * nudge, ddy / ddist * nudge), pos_now)
+                    recovery_until[i] = 0
+                    stuck_counters[i] = 0
+
+        if step_counter["n"] % steps_per_frame == 0:
+            pos = []
+            for i in range(n_racers):
+                if active[i]:
+                    b = bodies[i]
+                    vx_, vy_ = b.velocity
+                    ang = math.degrees(math.atan2(vy_, vx_)) + 90 if (vx_ or vy_) else 0.0
+                    pos.append((b.position.x, b.position.y, ang))
+                else:
+                    pos.append(None)
+            n_alive_now = sum(1 for a in active if a)
+            frames.append({"pos": pos, "active": list(active), "armed": list(armed), "n_alive": n_alive_now})
+            frame_idx += 1
+
+            if finish_log and finish_log[-1][0] > step_counter["n"] - steps_per_frame:
+                events = [(fl[1], fl[2], fl[3]) for fl in finish_log if fl[0] > step_counter["n"] - steps_per_frame]
+                if events:
+                    finish_frame_flags[frame_idx - 1] = events
+
+            if elim_log and elim_log[-1][0] > step_counter["n"] - steps_per_frame:
+                events = [(el[1], el[2], el[3]) for el in elim_log if el[0] > step_counter["n"] - steps_per_frame]
+                if events:
+                    elim_frame_flags[frame_idx - 1] = events
+
+            recent_bumps = [b for b in bump_log if b[0] > step_counter["n"] - steps_per_frame]
+            if recent_bumps:
+                best = max(recent_bumps, key=lambda b: b[3])
+                bump_frame_flags[frame_idx - 1] = (best[1], best[2], best[3], best[4])
+
+            for i in range(n_racers):
+                if (finished[i] or eliminated[i]) and shapes[i] in space.shapes:
+                    try:
+                        space.remove(bodies[i], shapes[i])
+                    except Exception:
+                        pass
+
+            if step_counter["n"] >= min_steps and (finish_log or sum(1 for a in active if a) <= 1):
+                break
+
+    def _progress(i):
+        r, c = last_cell[i]
+        return dist_field[r][c] if dist_field[r][c] is not None else 999999
+
+    if winner_idx_box[0] is not None:
+        winner_idx = winner_idx_box[0]
+    else:
+        alive_now = [i for i in range(n_racers) if active[i]]
+        if len(alive_now) == 1:
+            winner_idx = alive_now[0]
+        elif alive_now:
+            winner_idx = min(alive_now, key=_progress)
+        else:
+            winner_idx = elim_log[-1][1] if elim_log else 0
+
+    eliminated_order = [el[1] for el in elim_log]
+    remaining_alive = sorted((i for i in range(n_racers) if active[i] and i != winner_idx), key=_progress)
+    remaining_eliminated = [i for i in reversed(eliminated_order) if i != winner_idx]
+    full_ranking = [winner_idx] + remaining_alive + remaining_eliminated
+
+    finale_frames = int(1.6 * fps)
+    if frames:
+        last = dict(frames[-1])
+        last["pos"] = list(last["pos"])
+        for _ in range(finale_frames):
+            frames.append(dict(last))
+
+    return {
+        "frames": frames,
+        "finish_frame_flags": finish_frame_flags,
+        "elim_frame_flags": elim_frame_flags,
+        "bump_frame_flags": bump_frame_flags,
+        "racers": racers,
+        "n_racers": n_racers,
+        "winner_idx": winner_idx,
+        "winner_name": racers[winner_idx]["name"],
+        "winner_finished": winner_idx in [fl[1] for fl in finish_log],
+        "full_ranking": full_ranking,
+        "pickup_pos": pickup_pos,
+        "pickup_collect_step": pickup_collect_step,
+        "steps_per_frame": steps_per_frame,
+        "zone_state_fn": _zone_state,
+        "zone_bounds": (top, bottom),
+        "max_seconds": max_seconds,
+        "fps": fps,
+        "w": w,
+        "h": h,
+        "geo": geo,
+        "maze_img": maze_img,
+        "theme": theme,
+        "finish_col": finish_col,
+        "finish_zone": (fzx, fzy),
+        "finale_start": len(frames) - finale_frames,
+        "seed": seed,
+    }
+
+
 # --- Wording variety --------------------------------------------------
 
 WIN_TEXT_TEMPLATES = ["{name} WINS!", "{name} TAKES THE MAZE!", "{name} FINDS THE WAY!", "{name} CROSSES FIRST!"]
+BATTLE_WIN_TEXT_TEMPLATES = ["{name} SURVIVES!", "{name} IS LAST STANDING!", "{name} WINS THE ARENA!", "{name} TAKES IT ALL!"]
 FIGHT_WORD_TEMPLATES = ["GO!", "RACE!", "RUN!", "MOVE!"]
 
 
@@ -1249,6 +1843,234 @@ def build_race_clip(race):
     return clip
 
 
+def build_battle_clip(race):
+    """Battle-mode counterpart to build_race_clip: same camera/HUD/intro/
+    win-banner/camera-shake scaffolding, adapted for a closed arena — camera
+    tracks the alive-racer centroid instead of 'furthest along', HUD shows
+    ALIVE count, a shrinking red zone-tint overlay replaces the finish
+    stripe, weapon pickups are drawn until collected, and elimination
+    pop-ups replace finish pop-ups. Racer icons are precomputed in both
+    armed/unarmed variants (2 per racer) so the per-frame armed badge is a
+    cheap variant swap instead of a fresh icon render (which would redo the
+    shadow blur every frame)."""
+    from moviepy import VideoClip
+
+    w, h, fps = race["w"], race["h"], race["fps"]
+    frames = race["frames"]
+    racers = race["racers"]
+    n = race["n_racers"]
+    geo = race["geo"]
+    theme = race["theme"]
+    maze_img = race["maze_img"].convert("RGBA")
+    finale_start = race["finale_start"]
+    n_frames = len(frames)
+    steps_per_frame = race["steps_per_frame"]
+    zone_state_fn = race["zone_state_fn"]
+    zone_top, zone_bottom = race["zone_bounds"]
+    max_seconds = race["max_seconds"]
+
+    ICON_SIZE = int(geo.racer_radius * 2.6)
+    icons_unarmed = [make_racer_icon(r["color"], ICON_SIZE, armed=False) for r in racers]
+    icons_armed = [make_racer_icon(r["color"], ICON_SIZE, armed=True) for r in racers]
+    WEAPON_ICON_SIZE = int(geo.racer_radius * 1.6)
+    weapon_icon = _make_weapon_icon(WEAPON_ICON_SIZE)
+
+    HUD_MARGIN = int(h * 0.13)
+    viewport_h = h - HUD_MARGIN
+    maze_img_h = maze_img.height
+
+    CAMERA_SMOOTH = 0.06
+    LEAD_FRAC = 0.5
+    camera_tops = []
+    _prev = None
+    for fr in frames:
+        alive_pts = [p for p in fr["pos"] if p is not None]
+        lead_y = (sum(p[1] for p in alive_pts) / len(alive_pts)) if alive_pts else maze_img_h * 0.5
+        if _prev is None:
+            _prev = lead_y
+        else:
+            _prev = _prev + CAMERA_SMOOTH * (lead_y - _prev)
+        cam_top = _prev - viewport_h * LEAD_FRAC
+        cam_top = max(0.0, min(cam_top, max(0.0, maze_img_h - viewport_h)))
+        camera_tops.append(cam_top)
+
+    title_font = get_font(int(h * 0.032))
+    counter_font = get_font(int(h * 0.028))
+    win_font = get_font(int(h * 0.052))
+    count_font = get_font(int(h * 0.11))
+    elim_pop_font = get_font(int(h * 0.020))
+
+    title_text = f"{n}-Way Battle Royale"
+    win_text_template = (_pick_variant(race["seed"], "wintext", WIN_TEXT_TEMPLATES) if race["winner_finished"]
+                          else _pick_variant(race["seed"], "battlewintext", BATTLE_WIN_TEXT_TEMPLATES))
+    go_word = _pick_variant(race["seed"], "goword", FIGHT_WORD_TEMPLATES)
+
+    ambient_particles = _make_ambient_particles(race["seed"], 14, w, h)
+    intro_frames = int(INTRO_SECONDS * fps)
+
+    def make_frame(t):
+        raw_idx = int(round(t * fps))
+        in_intro = raw_idx < intro_frames
+        idx = 0 if in_intro else min(n_frames - 1, raw_idx - intro_frames)
+        st = frames[idx]
+        cam_top = camera_tops[0] if in_intro else camera_tops[idx]
+
+        img = Image.new("RGBA", (w, h), (*theme["floor"], 255))
+        crop_top = int(cam_top)
+        crop_bottom = min(maze_img_h, crop_top + viewport_h)
+        maze_slice = maze_img.crop((0, crop_top, w, crop_bottom))
+        img.paste(maze_slice, (0, HUD_MARGIN))
+
+        d = ImageDraw.Draw(img, "RGBA")
+
+        for p in ambient_particles:
+            twinkle = 0.5 + 0.5 * math.sin(t * 1.6 + p["phase"])
+            r = p["r"]
+            alpha = int(30 + 70 * twinkle)
+            d.ellipse([p["x"] - r, p["y"] - r, p["x"] + r, p["y"] + r], fill=(*theme["particle"], alpha))
+
+        if not in_intro:
+            # Closing-zone tint: solid red fill over the whole arena extent
+            # with a transparent hole punched out for the current safe
+            # funnel (bounded above by the closing top wall, open all the
+            # way down to the finish) — cut on a plain (non-blending) draw
+            # context so the punch is a real overwrite-to-transparent
+            # rather than a 0-alpha no-op blend.
+            t_phys = min(max_seconds, idx * steps_per_frame / PHYSICS_HZ)
+            top_y, s_left, s_right, _vy, _vx = zone_state_fn(t_phys)
+            danger = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+            dd = ImageDraw.Draw(danger)
+            arena_top_sy = max(HUD_MARGIN, zone_top - crop_top + HUD_MARGIN)
+            arena_bottom_sy = min(h, zone_bottom - crop_top + HUD_MARGIN)
+            if arena_bottom_sy > arena_top_sy:
+                dd.rectangle([0, arena_top_sy, w, arena_bottom_sy], fill=(200, 30, 30, 85))
+            safe_sy0 = max(HUD_MARGIN, top_y - crop_top + HUD_MARGIN)
+            if arena_bottom_sy > safe_sy0:
+                dd.rectangle([s_left, safe_sy0, s_right, arena_bottom_sy], fill=(0, 0, 0, 0))
+            img.alpha_composite(danger)
+            d = ImageDraw.Draw(img, "RGBA")
+
+            for k, (px, py) in enumerate(race["pickup_pos"]):
+                collect_step = race["pickup_collect_step"][k]
+                if collect_step is not None and idx * steps_per_frame >= collect_step:
+                    continue
+                ry = py - crop_top + HUD_MARGIN
+                bob = math.sin(t * 3.0 + k * 1.3) * geo.cell * 0.06
+                img.alpha_composite(weapon_icon, (int(px - weapon_icon.width / 2),
+                                                    int(ry + bob - weapon_icon.height / 2)))
+
+        d.rectangle([0, 0, w, HUD_MARGIN], fill=(20, 20, 26, 235))
+        tw = d.textlength(title_text, font=title_font)
+        d.text((w / 2 - tw / 2, h * 0.02), title_text, font=title_font, fill=(255, 255, 255, 255))
+        n_alive = st.get("n_alive", n)
+        counter_text = f"ALIVE: {n_alive}/{n}"
+        cw = d.textlength(counter_text, font=counter_font)
+        d.text((w / 2 - cw / 2, h * 0.075), counter_text, font=counter_font, fill=(*theme["accent"], 255))
+
+        if not in_intro:
+            for fi in range(max(0, idx - 6), idx + 1):
+                if fi not in race["bump_frame_flags"]:
+                    continue
+                bx, by, intensity, kind = race["bump_frame_flags"][fi]
+                age = idx - fi
+                if age <= 5:
+                    a = max(0, int(180 * intensity * (1 - age / 5.0)))
+                    ry = by - crop_top + HUD_MARGIN
+                    rr = 8 + age * 3
+                    color = (255, 220, 120) if kind == "wall" else (255, 255, 255)
+                    d.ellipse([bx - rr, ry - rr, bx + rr, ry + rr], outline=(*color, a), width=3)
+
+            for fi in range(max(0, idx - 20), idx + 1):
+                if fi not in race["elim_frame_flags"]:
+                    continue
+                age = idx - fi
+                if age > 24:
+                    continue
+                pa = max(0, int(255 * (1 - age / 24.0)))
+                for (ridx, fx, fy) in race["elim_frame_flags"][fi]:
+                    ry = fy - crop_top + HUD_MARGIN - age * 1.5
+                    label = f"{racers[ridx]['name']} ELIMINATED!"
+                    lw = d.textlength(label, font=elim_pop_font)
+                    d.text((fx - lw / 2, ry), label, font=elim_pop_font, fill=(255, 90, 90, pa),
+                           stroke_width=2, stroke_fill=(0, 0, 0, pa))
+
+            for fi in range(max(0, idx - 20), idx + 1):
+                if fi not in race["finish_frame_flags"]:
+                    continue
+                age = idx - fi
+                if age > 24:
+                    continue
+                pa = max(0, int(255 * (1 - age / 24.0)))
+                for (ridx, fx, fy) in race["finish_frame_flags"][fi]:
+                    ry = fy - crop_top + HUD_MARGIN - age * 1.5
+                    label = f"{racers[ridx]['name']} FINISHED!"
+                    lw = d.textlength(label, font=elim_pop_font)
+                    d.text((fx - lw / 2, ry), label, font=elim_pop_font, fill=(255, 255, 255, pa),
+                           stroke_width=2, stroke_fill=(0, 0, 0, pa))
+
+        for i in range(n):
+            pos = st["pos"][i]
+            if pos is None:
+                continue
+            x, y, ang = pos
+            ry = y - crop_top + HUD_MARGIN
+            if ry < HUD_MARGIN - ICON_SIZE or ry > h + ICON_SIZE:
+                continue
+            is_armed = st["armed"][i] if "armed" in st else False
+            icon_set = icons_armed if is_armed else icons_unarmed
+            icon = icon_set[i].rotate(-ang, resample=Image.BICUBIC)
+            img.alpha_composite(icon, (int(x - icon.width / 2), int(ry - icon.height / 2)))
+
+        if in_intro:
+            phase = t / INTRO_SECONDS * 3
+            if phase < 1:
+                num = "3"
+            elif phase < 2:
+                num = "2"
+            elif phase < 2.6:
+                num = "1"
+            else:
+                num = go_word
+            cw2 = d.textlength(num, font=count_font)
+            d.text((w / 2 - cw2 / 2, h * 0.42), num, font=count_font, fill=(255, 255, 255, 255),
+                   stroke_width=6, stroke_fill=(0, 0, 0, 255))
+
+        if idx >= finale_start and not in_intro:
+            win_text = win_text_template.format(name=race["winner_name"])
+            fade_in = min(1.0, (idx - finale_start) / (fps * 0.3))
+            wa = int(255 * fade_in)
+            wtw = d.textlength(win_text, font=win_font)
+            d.rectangle([0, h * 0.42, w, h * 0.42 + h * 0.10], fill=(0, 0, 0, int(150 * fade_in)))
+            d.text((w / 2 - wtw / 2, h * 0.44), win_text, font=win_font, fill=(255, 215, 60, wa),
+                   stroke_width=5, stroke_fill=(0, 0, 0, wa))
+
+        arr = np.array(img.convert("RGB"))
+
+        if not in_intro:
+            shake_dx = shake_dy = 0.0
+            for fi in range(max(0, idx - 3), idx + 1):
+                flag = race["bump_frame_flags"].get(fi)
+                if not flag:
+                    continue
+                _, _, intensity, kind = flag
+                if kind != "racer" or intensity < 0.45:
+                    continue
+                age = idx - fi
+                amt = intensity * max(0.0, 1 - age / 3.0) * 5.0
+                jr = _det_jitter(fi)
+                shake_dx += math.cos(jr * 6.283) * amt
+                shake_dy += math.sin(jr * 6.283) * amt
+            if shake_dx or shake_dy:
+                arr = np.roll(arr, (int(round(shake_dy)), int(round(shake_dx))), axis=(0, 1))
+
+        return arr
+
+    duration = INTRO_SECONDS + n_frames / fps
+    clip = VideoClip(make_frame, duration=duration)
+    clip.fps = fps
+    return clip
+
+
 def build_cold_open_clip(race, seconds=COLD_OPEN_SECONDS):
     """Standalone short (silent) VideoClip: a punched-in zoom + white flash
     + fade-to-black tease of the winner closing in on the finish line, no
@@ -1314,6 +2136,81 @@ def build_cold_open_clip(race, seconds=COLD_OPEN_SECONDS):
         x, y, ang = pos
         ry = y - crop_top + HUD_MARGIN
         icon = icons[i].rotate(-ang, resample=Image.BICUBIC)
+        base_img.alpha_composite(icon, (int(x - icon.width / 2), int(ry - icon.height / 2)))
+    base_arr = np.array(base_img.convert("RGB")).astype(np.float32)
+
+    def make_frame(t):
+        zoom = 1.05 + 0.15 * (t / seconds)
+        zw, zh = max(1, int(w / zoom)), max(1, int(h / zoom))
+        zx0, zy0 = (w - zw) // 2, (h - zh) // 2
+        zimg = (Image.fromarray(base_arr.astype(np.uint8))
+                .crop((zx0, zy0, zx0 + zw, zy0 + zh)).resize((w, h), Image.BICUBIC))
+        arr = np.array(zimg).astype(np.float32)
+        if t < 0.15:
+            flash_amt = (1.0 - t / 0.15) ** 1.5
+            arr = arr + (255 - arr) * flash_amt * 0.85
+        fade_start = seconds - 0.12
+        if t > fade_start:
+            arr = arr * (1 - (t - fade_start) / 0.12)
+        return np.clip(arr, 0, 255).astype(np.uint8)
+
+    clip = VideoClip(make_frame, duration=seconds)
+    clip.fps = fps
+    return clip
+
+
+def build_battle_cold_open_clip(race, seconds=COLD_OPEN_SECONDS):
+    """Battle-mode counterpart to build_cold_open_clip: same zoom/flash/
+    fade tease, sourced from a few frames before the match's climax — the
+    winning finish-line crossing, or the final elimination if nobody
+    reached the finish — whichever it is, so it teases the arena without
+    spoiling the outcome."""
+    from moviepy import VideoClip
+
+    w, h, fps = race["w"], race["h"], race["fps"]
+    frames = race["frames"]
+    racers = race["racers"]
+    n = race["n_racers"]
+    geo = race["geo"]
+    theme = race["theme"]
+    maze_img = race["maze_img"].convert("RGBA")
+    maze_img_h = maze_img.height
+
+    climax_fis = list(race["elim_frame_flags"].keys()) + list(race["finish_frame_flags"].keys())
+    final_fi = max(climax_fis) if climax_fis else len(frames) - 1
+    src_idx = max(0, final_fi - 15)
+
+    HUD_MARGIN = int(h * 0.13)
+    viewport_h = h - HUD_MARGIN
+    ICON_SIZE = int(geo.racer_radius * 2.6)
+    icons_unarmed = [make_racer_icon(r["color"], ICON_SIZE, armed=False) for r in racers]
+    icons_armed = [make_racer_icon(r["color"], ICON_SIZE, armed=True) for r in racers]
+
+    CAMERA_SMOOTH = 0.06
+    LEAD_FRAC = 0.5
+    cam_top = None
+    for i in range(src_idx + 1):
+        alive_pts = [p for p in frames[i]["pos"] if p is not None]
+        lead_y = (sum(p[1] for p in alive_pts) / len(alive_pts)) if alive_pts else maze_img_h * 0.5
+        cam_top = lead_y if cam_top is None else cam_top + CAMERA_SMOOTH * (lead_y - cam_top)
+    top = (cam_top - viewport_h * LEAD_FRAC) if cam_top is not None else 0.0
+    top = max(0.0, min(top, max(0.0, maze_img_h - viewport_h)))
+
+    base_img = Image.new("RGBA", (w, h), (*theme["floor"], 255))
+    crop_top = int(top)
+    crop_bottom = min(maze_img_h, crop_top + viewport_h)
+    maze_slice = maze_img.crop((0, crop_top, w, crop_bottom))
+    base_img.paste(maze_slice, (0, HUD_MARGIN))
+    st = frames[src_idx]
+    for i in range(n):
+        pos = st["pos"][i]
+        if pos is None:
+            continue
+        x, y, ang = pos
+        ry = y - crop_top + HUD_MARGIN
+        is_armed = st["armed"][i] if "armed" in st else False
+        icon_set = icons_armed if is_armed else icons_unarmed
+        icon = icon_set[i].rotate(-ang, resample=Image.BICUBIC)
         base_img.alpha_composite(icon, (int(x - icon.width / 2), int(ry - icon.height / 2)))
     base_arr = np.array(base_img.convert("RGB")).astype(np.float32)
 
@@ -1409,6 +2306,21 @@ def _finish_ding():
     return (tone * env * 0.5).astype(np.float32)
 
 
+def _elim_sound():
+    """Short descending-pitch 'knockout' zap plus a noise crack — distinct
+    from _finish_ding's bright rising chime, for battle mode's eliminations."""
+    dur = 0.28
+    n = int(SR * dur)
+    t = np.linspace(0, dur, n, endpoint=False)
+    env = np.exp(-t * 7)
+    f0, f1 = 650.0, 120.0
+    freq = f0 + (f1 - f0) * (t / dur)
+    phase = 2 * np.pi * np.cumsum(freq) / SR
+    tone = np.sin(phase) * env * 0.6
+    noise = np.random.default_rng(3).uniform(-1, 1, n) * np.exp(-t * 20) * 0.3
+    return (tone + noise).astype(np.float32)
+
+
 def _victory_chime():
     parts = []
     thump_dur = 0.18
@@ -1485,10 +2397,15 @@ def build_sfx_array(race):
         t = T0 + frame_idx / fps
         _add(t, _bump_sound(intensity, kind), vol=0.8 if kind == "racer" else 0.55)
 
-    for frame_idx, events in race["finish_frame_flags"].items():
+    for frame_idx, events in race.get("finish_frame_flags", {}).items():
         t = T0 + frame_idx / fps
         for _ in events:
             _add(t, _finish_ding(), vol=0.7)
+    if "elim_frame_flags" in race:
+        for frame_idx, events in race["elim_frame_flags"].items():
+            t = T0 + frame_idx / fps
+            for _ in events:
+                _add(t, _elim_sound(), vol=0.75)
 
     finale_t = T0 + race["finale_start"] / fps
     _add(finale_t, _victory_chime(), vol=0.9)
@@ -1506,7 +2423,8 @@ def race_bump_times(race):
 
 # --- Thumbnail -----------------------------------------------------------
 
-def generate_thumbnail(race, output_path, w=1280, h=720):
+def generate_thumbnail(race, output_path, w=1280, h=720, caption="WHO FINISHES FIRST?",
+                        banner_color=(60, 180, 90), badge_text=None):
     theme = race["theme"]
     racers = race["racers"]
     n = race["n_racers"]
@@ -1523,7 +2441,7 @@ def generate_thumbnail(race, output_path, w=1280, h=720):
     img = Image.alpha_composite(img, glow)
 
     d = ImageDraw.Draw(img, "RGBA")
-    d.rectangle([0, h * 0.78, w, h], fill=(60, 180, 90, 255))
+    d.rectangle([0, h * 0.78, w, h], fill=(*banner_color, 255))
 
     icon_size = int(h * (0.30 if n <= 6 else 0.24))
     gap = w * 0.015
@@ -1538,13 +2456,13 @@ def generate_thumbnail(race, output_path, w=1280, h=720):
         x += ic.width + gap
 
     badge_font = get_font(int(h * 0.09))
-    badge_text = f"{n}-WAY MAZE RACE"
+    badge_text = badge_text or f"{n}-WAY MAZE RACE"
     bw = d.textlength(badge_text, font=badge_font)
     d.text((w / 2 - bw / 2, h * 0.05), badge_text, font=badge_font, fill=(255, 215, 60, 255),
            stroke_width=6, stroke_fill=(0, 0, 0, 255))
 
     title_font = get_font(int(h * 0.08))
-    title_text = f"WHO FINISHES FIRST?"
+    title_text = caption
     tw = d.textlength(title_text, font=title_font)
     d.text((w / 2 - tw / 2, h * 0.85), title_text, font=title_font, fill=(255, 255, 255, 255),
            stroke_width=5, stroke_fill=(0, 0, 0, 255))

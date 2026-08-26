@@ -27,15 +27,24 @@ logger = logging.getLogger(__name__)
 
 from video_gen import generate_video, send_telegram
 from tournament_gen import generate_tournament_video
+from battle_gen import generate_battle_video
 
 TOURNAMENT_TIME = os.getenv('TOURNAMENT_POST_TIME', '08:15')
 
+# One of the daily POST_TIMES slots generates a Battle Royale video instead
+# of a maze race — keeps total daily Shorts volume unchanged while adding
+# mode variety. The middle slot by default (index 2 of however many slots
+# are configured); adjust BATTLE_SLOT to change the ratio.
+BATTLE_SLOT = int(os.getenv('BATTLE_SLOT', str(min(2, len(POST_TIMES)))))
+
 def make_job(slot_num):
+    is_battle = slot_num == BATTLE_SLOT
     def job():
-        logger.info(f"⏰ {slot_num}-жүктеу басталды...")
-        send_telegram(f"⏰ <b>Maze Race {slot_num}/{len(POST_TIMES)} жүктеу басталды</b>")
+        kind = "Battle Royale" if is_battle else "Maze Race"
+        logger.info(f"⏰ {slot_num}-жүктеу басталды ({kind})...")
+        send_telegram(f"⏰ <b>{kind} {slot_num}/{len(POST_TIMES)} жүктеу басталды</b>")
         try:
-            generate_video()
+            generate_battle_video() if is_battle else generate_video()
             logger.info(f"✅ {slot_num}-жүктеу сәтті аяқталды")
         except Exception as e:
             logger.error(f"❌ {slot_num}-жүктеу сәтсіз: {e}")

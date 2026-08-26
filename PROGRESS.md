@@ -8,7 +8,10 @@ file is the durable record.
 
 - [x] Concept locked: top-down maze race, square racers with faces, code-only
       visuals (pymunk physics + PIL render + numpy SFX), inspired by the
-      "Square League" genre but NOT copying its assets/branding.
+      "Square League" genre but NOT copying its assets/branding. Updated
+      2026-08-27: this no longer means "no combat mechanic ever" — see
+      "Battle mode" below, added as a second mode alongside the unchanged
+      race-to-finish mode, at the user's explicit request.
 - [x] Project scaffolded at `D:\marble-race-bot` — `race_sim.py`,
       `video_gen.py`, `scheduler.py`, `tournament_gen.py`.
 - [x] Racer-vs-racer collision physics tuned for visible marble-like bounce
@@ -58,6 +61,41 @@ file is the durable record.
       unpleasant (muddy/semi-transparent, clashes with body color) — sent to
       the fork agent currently doing the visual-polish pass to fix alongside
       everything else it's already touching.
+
+## Battle mode (added 2026-08-27)
+
+- [x] Second video mode added alongside the maze race, per user request
+      after sharing a reference video (`youtube.com/shorts/GcPda6o7TiE`,
+      "Square Race!" by `@the_qzone`) that mixes a shrinking "zone" with
+      weapon pickups and elimination. The original "race to finish" mode is
+      **unchanged** — this is an addition, not a replacement of the locked
+      concept below.
+- [x] `race_sim.py`: `simulate_battle`/`build_battle_clip`/
+      `build_battle_cold_open_clip`. Revised 2026-08-27 after user feedback
+      that watched footage didn't match their mental model (source:
+      App Store "Square Race: Color Clash" — mechanic only, not
+      assets/design): the finish line from race mode is kept (same
+      `MazeGeometry(has_finish=True)`/finish sensor/dist_field), and three
+      **kinematic pymunk walls** (top/left/right, bottom stays open onto
+      the finish) physically sweep inward over the match — a racer can't
+      cross one and gets carried/squeezed by it, no separate damage-tick.
+      Weapon pickups (star icon) let an armed racer **throw** an unarmed
+      one on collision (`BATTLE_KNOCKBACK_IMPULSE` impulse, not HP loss);
+      slamming into any wall within `BATTLE_FLYING_SECONDS` of being thrown
+      is what actually eliminates a racer (`BATTLE_WALL_KILL_IMPULSE`
+      threshold). First to the finish wins outright; otherwise last-alive,
+      or closest-to-finish on a time-out. Reuses the maze generator/theme/
+      racer-icon/physics system from race mode throughout.
+- [x] New `battle_gen.py` (mirrors `tournament_gen.py`'s structure) —
+      own title/description/tag templates, own thumbnail caption
+      ("LAST ONE STANDING?" / red banner via `generate_thumbnail`'s new
+      `caption`/`banner_color`/`badge_text` params), own `battle_debug.log`.
+- [x] `scheduler.py`: the middle daily `POST_TIMES` slot now generates a
+      Battle Royale video instead of a maze race (`BATTLE_SLOT` env var,
+      default = slot 2) — total daily Shorts volume unchanged.
+- [x] `.github/workflows/battle.yml` added (cron `15 11 * * *`, i.e. the
+      16:15 KZ slot removed from `upload.yml`) — same total of 3 daily
+      Shorts across the two workflows.
 
 ## Still to do
 
