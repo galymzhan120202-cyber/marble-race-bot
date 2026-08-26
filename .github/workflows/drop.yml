@@ -1,0 +1,65 @@
+name: Maze Race Marble Drop Upload
+
+# Marble Drop mode: gravity-driven Plinko-style descent — no maze, no
+# steering AI, pure pymunk physics (gravity + pegs + spinning blades).
+# Its own daily slot, independent of the Shorts/Tournament/Battle cadences.
+
+on:
+  schedule:
+    - cron: '15 14 * * *'   # 19:15 KZ
+  workflow_dispatch:        # қолмен де іске қосуға болады
+
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Кодты алу
+        uses: actions/checkout@v4
+
+      - name: Python орнату
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: FFmpeg орнату
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg fonts-dejavu
+
+      - name: Python кітапханаларын орнату
+        run: pip install --quiet -r requirements.txt
+
+      - name: YouTube деректерін қалпына келтіру
+        env:
+          MRACE_CLIENT_SECRETS_JSON: ${{ secrets.MRACE_CLIENT_SECRETS_JSON }}
+          MRACE_YOUTUBE_TOKEN_JSON: ${{ secrets.MRACE_YOUTUBE_TOKEN_JSON }}
+        run: |
+          echo "$MRACE_CLIENT_SECRETS_JSON" > client_secrets.json
+          echo "$MRACE_YOUTUBE_TOKEN_JSON" > youtube_token.json
+
+      - name: .env файлын құру
+        run: |
+          cat > .env << 'EOF'
+          TELEGRAM_NOTIFY_TOKEN=${{ secrets.MRACE_TELEGRAM_NOTIFY_TOKEN }}
+          TELEGRAM_NOTIFY_CHAT_ID=${{ secrets.MRACE_TELEGRAM_NOTIFY_CHAT_ID }}
+          DROP_MIN_SECONDS=8
+          DROP_MAX_SECONDS=22
+          MUSIC_VOLUME=0.15
+          SFX_VOLUME=0.9
+          YOUTUBE_CATEGORY_ID=20
+          YOUTUBE_PRIVACY_STATUS=public
+          YOUTUBE_MADE_FOR_KIDS=false
+          VIDEO_CODEC=libx264
+          AUDIO_CODEC=aac
+          DROP_VIDEO_FPS=60
+          VIDEO_PRESET=ultrafast
+          DROP_VIDEO_WIDTH=1080
+          DROP_VIDEO_HEIGHT=1920
+          MAX_RETRIES=3
+          RETRY_DELAY=2
+          EOF
+
+      - name: Видео құру және YouTube-ке жүктеу
+        run: python -c "from drop_gen import generate_drop_video; generate_drop_video()"

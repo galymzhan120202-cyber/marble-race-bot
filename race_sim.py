@@ -1512,7 +1512,20 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=32, min_seconds=14, n_racers
                 _battle_recompute_target(i)
                 next_decision[i] = step_counter["n"] + DECISION_STEPS
 
-            tx, ty = target[i]
+            # If the closing zone has already swept past this racer's
+            # position, override its target for this step with a direct
+            # escape point back into the safe funnel instead of whatever
+            # the AI was steering toward — the kinematic wall alone will
+            # eventually push a racer clear, but its steering force can
+            # fight that push for a while first (aiming back at a pickup
+            # or an enemy on the wrong side of the wall), which read as
+            # the racer visibly sitting inside the tinted danger area
+            # instead of being cleanly excluded from it.
+            if x < s_left or x > s_right or y < top_y:
+                tx = min(max(x, s_left + geo.racer_radius * 1.5), s_right - geo.racer_radius * 1.5)
+                ty = max(y, top_y) + geo.cell * 0.8
+            else:
+                tx, ty = target[i]
             dx, dy = tx - x, ty - y
             dist = math.hypot(dx, dy) or 1.0
             speed_scale = min(1.0, max(0.35, dist / SLOWDOWN_RADIUS))
@@ -1520,6 +1533,8 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=32, min_seconds=14, n_racers
             desired_vy = dy / dist * MAX_SPEED * speed_mult[i] * speed_scale
             vx_, vy_ = bodies[i].velocity
             steer_gain = STEER_GAIN * steer_mult[i]
+            if x < s_left or x > s_right or y < top_y:
+                steer_gain *= 2.2  # escape urgently, not at normal cruising authority
             if step_counter["n"] < recovery_until[i]:
                 remaining = (recovery_until[i] - step_counter["n"]) / RECOVERY_STEPS
                 steer_gain *= RECOVERY_MIN_STEER_MULT + (1 - RECOVERY_MIN_STEER_MULT) * (1 - remaining)
@@ -1653,6 +1668,481 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=32, min_seconds=14, n_racers
         "finale_start": len(frames) - finale_frames,
         "seed": seed,
     }
+
+
+# --- Drop mode: zero-AI gravity descent (Plinko-style marble race) --------
+#
+# Third mode, architecturally unlike race/battle: there is NO steering AI
+# and NO maze grid at all. Squares spawn at the top of a long vertical
+# track under real downward gravity and pure pymunk physics — bouncing off
+# staggered static pegs, a couple of spinning kinematic blades, and the
+# side walls — decides the outcome. First to cross the finish line at the
+# bottom wins. This matches a "Marble Race"/Plinko spectator-game brief the
+# user provided (gravity + collisions only, dynamic camera on the current
+# leader) rather than simulate_race's top-down BFS-steered navigation.
+
+DROP_GRAVITY = 1600.0
+# "Vibrant & Cartoon" tuning: high elasticity everywhere so racers and
+# obstacles bounce off each other playfully instead of settling/deadening.
+DROP_PEG_ELASTICITY = 0.88
+DROP_RACER_ELASTICITY = 0.85
+DROP_WALL_ELASTICITY = 0.8
+
+DROP_SKY_BLUE = (110, 205, 248)
+# Highly saturated candy colors for the racers — overrides RACER_POOL's
+# softer palette for this mode only; name/weight/confusion still come from
+# the pool so a racer keeps its identity/handling, just not its house color.
+DROP_CANDY_COLORS = [
+    (255, 105, 180),  # bubblegum pink
+    (70, 220, 90),    # lime green
+    (60, 220, 235),   # bright cyan
+    (255, 220, 40),   # banana yellow
+    (255, 140, 30),   # bright orange
+    (185, 90, 240),   # bright purple
+]
+DROP_OBSTACLE_COLORS = [(255, 140, 30), (255, 255, 255), (185, 90, 240)]  # orange, white, purple
+
+
+def simulate_drop(w, h, seed, fps=24, max_seconds=22, min_seconds=8, n_racers=None, forced_racers=None):
+    """Gravity-driven descent: no target/steering state per racer at all —
+    each physics step is just space.step(dt) plus bookkeeping. Camera later
+    follows whichever racer is currently furthest down, the same 'leader'
+    idea build_race_clip already uses for its own camera."""
+    rng = random.Random(seed)
+
+    if forced_racers is not None:
+        racers = [dict(r) for r in forced_racers]
+        n_racers = len(racers)
+    else:
+        if n_racers is None:
+            n_racers = rng.choice([3, 4, 5])
+        racers = [dict(r) for r in rng.sample(RACER_POOL, n_racers)]
+    # Candy palette overrides RACER_POOL's house colors for this mode's
+    # "Vibrant & Cartoon" look — name/weight/confusion (personality/physics)
+    # stay from the pool, only the visual color changes.
+    candy = DROP_CANDY_COLORS[:]
+    rng.shuffle(candy)
+    for i, r in enumerate(racers):
+        r["color"] = candy[i % len(candy)]
+
+    border_w = w * 0.06
+    left, right = border_w, w - border_w
+    track_w = right - left
+    # Fixed small-marble sizing (independent of n_racers) — a radius sized
+    # off n_racers alone (as race/battle's cell sizing does) made racers
+    # WIDER than the gap between adjacent pegs at low racer counts, wedging
+    # them permanently between two pegs instead of threading the Plinko
+    # field. Peg spacing below is sized in racer-radius units specifically
+    # to keep every gap comfortably wider than a racer's diameter.
+    racer_radius = track_w * 0.042
+    peg_radius = racer_radius * 0.5
+
+    top_y = h * 0.16
+    track_h = h * 3.4
+    finish_y = top_y + track_h
+
+    space = pymunk.Space()
+    space.gravity = (0, DROP_GRAVITY)
+    space.damping = 0.999
+
+    for x in (left, right):
+        seg = pymunk.Segment(space.static_body, (x, top_y - h * 0.1), (x, finish_y + h * 0.05), 6)
+        seg.elasticity = DROP_WALL_ELASTICITY
+        seg.friction = 0.15
+        seg.collision_type = WALL_TYPE
+        space.add(seg)
+
+    # Staggered peg field (classic Plinko/bean-machine layout) — every other
+    # row offset by half the column spacing so a falling square can never
+    # thread a perfectly straight gap all the way down.
+    peg_rng = random.Random(hashlib.sha256((str(seed) + "pegs").encode()).hexdigest())
+    # In racer-radius units so the gap between adjacent peg edges
+    # (col_spacing - 2*peg_radius = 4.0*racer_radius here) stays a
+    # comfortable ~2x a racer's diameter — wide enough that two pegs never
+    # wedge a racer in place.
+    row_spacing = racer_radius * 5.5
+    col_spacing = racer_radius * 5.0
+    pegs = []
+    y = top_y + h * 0.24
+    row_i = 0
+    while y < finish_y - h * 0.14:
+        offset = (col_spacing / 2) if row_i % 2 else 0.0
+        x = left + peg_radius * 2.2 + offset
+        while x < right - peg_radius * 2.2:
+            jx = peg_rng.uniform(-peg_radius * 0.35, peg_radius * 0.35)
+            jy = peg_rng.uniform(-peg_radius * 0.35, peg_radius * 0.35)
+            px, py = x + jx, y + jy
+            shape = pymunk.Circle(space.static_body, peg_radius, offset=(px, py))
+            shape.elasticity = DROP_PEG_ELASTICITY
+            shape.friction = 0.1
+            shape.collision_type = WALL_TYPE
+            space.add(shape)
+            pegs.append((px, py, DROP_OBSTACLE_COLORS[len(pegs) % len(DROP_OBSTACLE_COLORS)]))
+            x += col_spacing
+        y += row_spacing
+        row_i += 1
+
+    # A couple of spinning kinematic blades for extra chaos partway down —
+    # pymunk auto-integrates a kinematic body's angle from angular_velocity
+    # every space.step, so no manual per-frame rotation bookkeeping needed.
+    blades = []
+    for bi, frac in enumerate((0.34, 0.63)):
+        by = top_y + track_h * frac
+        bx = (left + right) / 2
+        blen = track_w * 0.55
+        bbody = pymunk.Body(body_type=pymunk.Body.KINEMATIC)
+        bbody.position = (bx, by)
+        bbody.angular_velocity = (1 if bi % 2 == 0 else -1) * peg_rng.uniform(1.4, 2.2)
+        bshape = pymunk.Segment(bbody, (-blen / 2, 0), (blen / 2, 0), peg_radius * 0.8)
+        bshape.elasticity = DROP_PEG_ELASTICITY
+        bshape.friction = 0.1
+        bshape.collision_type = WALL_TYPE
+        space.add(bbody, bshape)
+        blades.append({"body": bbody, "len": blen, "thickness": peg_radius * 0.8,
+                        "color": DROP_OBSTACLE_COLORS[bi % len(DROP_OBSTACLE_COLORS)]})
+
+    finish_shape = pymunk.Segment(space.static_body, (left, finish_y), (right, finish_y), 4)
+    finish_shape.sensor = True
+    finish_shape.collision_type = FINISH_TYPE
+    space.add(finish_shape)
+
+    bodies, shapes = [], []
+    spacing = track_w / (n_racers + 1)
+    for i in range(n_racers):
+        cx = left + spacing * (i + 1) + rng.uniform(-8, 8)
+        cy = top_y + rng.uniform(-6, 6)
+        mass = racers[i]["weight"]
+        half = racer_radius * 0.85
+        body = pymunk.Body(mass=mass, moment=pymunk.moment_for_box(mass, (half * 2, half * 2)))
+        body.position = (cx, cy)
+        body.angle = rng.uniform(-0.3, 0.3)
+        shape = pymunk.Poly(body, [(-half, -half), (half, -half), (half, half), (-half, half)])
+        shape.elasticity = DROP_RACER_ELASTICITY
+        shape.friction = 0.2
+        shape.collision_type = RACER_TYPE_BASE + i
+        space.add(body, shape)
+        bodies.append(body)
+        shapes.append(shape)
+
+    finished = [False] * n_racers
+    active = [True] * n_racers
+    winner_idx_box = [None]
+    finish_log = []
+    bump_log = []
+    step_counter = {"n": 0}
+
+    def on_begin(arbiter, space_, data):
+        ct1, ct2 = arbiter.shapes[0].collision_type, arbiter.shapes[1].collision_type
+        if FINISH_TYPE in (ct1, ct2):
+            other = ct2 if ct1 == FINISH_TYPE else ct1
+            idx = other - RACER_TYPE_BASE
+            if 0 <= idx < n_racers and not finished[idx]:
+                finished[idx] = True
+                active[idx] = False
+                finish_log.append((step_counter["n"], idx, bodies[idx].position.x, bodies[idx].position.y))
+                if winner_idx_box[0] is None:
+                    winner_idx_box[0] = idx
+        return True
+
+    def on_post_solve(arbiter, space_, data):
+        ct1, ct2 = arbiter.shapes[0].collision_type, arbiter.shapes[1].collision_type
+        impulse = arbiter.total_impulse.length
+        if impulse < 0.5:
+            return
+        cps = arbiter.contact_point_set.points
+        if not cps:
+            return
+        cx_, cy_ = cps[0].point_a.x, cps[0].point_a.y
+        intensity = min(1.0, impulse / 300.0)
+        if ct1 == WALL_TYPE or ct2 == WALL_TYPE:
+            if len(bump_log) < 4000:
+                bump_log.append((step_counter["n"], cx_, cy_, intensity, "wall"))
+        elif ct1 >= RACER_TYPE_BASE and ct2 >= RACER_TYPE_BASE:
+            if len(bump_log) < 4000:
+                bump_log.append((step_counter["n"], cx_, cy_, intensity, "racer"))
+
+    space.on_collision(begin=on_begin, post_solve=on_post_solve)
+
+    dt = 1.0 / PHYSICS_HZ
+    steps_per_frame = max(1, PHYSICS_HZ // fps)
+    max_steps = int(max_seconds * PHYSICS_HZ)
+    min_steps = int(min_seconds * PHYSICS_HZ)
+
+    frames = []
+    finish_frame_flags = {}
+    bump_frame_flags = {}
+    frame_idx = 0
+
+    while step_counter["n"] < max_steps:
+        step_counter["n"] += 1
+        space.step(dt)
+
+        if step_counter["n"] % steps_per_frame == 0:
+            pos = []
+            for i in range(n_racers):
+                if active[i]:
+                    b = bodies[i]
+                    pos.append((b.position.x, b.position.y, -math.degrees(b.angle)))
+                else:
+                    pos.append(None)
+            frames.append({"pos": pos, "active": list(active),
+                            "blade_angles": [-math.degrees(bl["body"].angle) for bl in blades]})
+            frame_idx += 1
+
+            if finish_log and finish_log[-1][0] > step_counter["n"] - steps_per_frame:
+                events = [(fl[1], fl[2], fl[3]) for fl in finish_log if fl[0] > step_counter["n"] - steps_per_frame]
+                if events:
+                    finish_frame_flags[frame_idx - 1] = events
+
+            recent_bumps = [b for b in bump_log if b[0] > step_counter["n"] - steps_per_frame]
+            if recent_bumps:
+                best = max(recent_bumps, key=lambda b: b[3])
+                bump_frame_flags[frame_idx - 1] = (best[1], best[2], best[3], best[4])
+
+            for i in range(n_racers):
+                if finished[i] and shapes[i] in space.shapes:
+                    try:
+                        space.remove(bodies[i], shapes[i])
+                    except Exception:
+                        pass
+
+            if finish_log and step_counter["n"] >= min_steps:
+                break
+
+    if winner_idx_box[0] is not None:
+        winner_idx = winner_idx_box[0]
+    else:
+        # Nobody reached the finish within max_seconds (rare) — whoever got
+        # furthest down (largest y, our 'leader' axis) is the winner.
+        winner_idx = max(range(n_racers), key=lambda i: bodies[i].position.y)
+
+    finished_order_list = [fl[1] for fl in finish_log]
+    remaining = sorted((i for i in range(n_racers) if i not in finished_order_list),
+                        key=lambda i: -bodies[i].position.y)
+    full_ranking = finished_order_list + remaining
+    if winner_idx not in full_ranking:
+        full_ranking = [winner_idx] + [i for i in full_ranking if i != winner_idx]
+
+    finale_frames = int(1.6 * fps)
+    if frames:
+        last = dict(frames[-1])
+        last["pos"] = list(last["pos"])
+        for _ in range(finale_frames):
+            frames.append(dict(last))
+
+    return {
+        "frames": frames,
+        "finish_frame_flags": finish_frame_flags,
+        "bump_frame_flags": bump_frame_flags,
+        "racers": racers,
+        "n_racers": n_racers,
+        "winner_idx": winner_idx,
+        "winner_name": racers[winner_idx]["name"],
+        "full_ranking": full_ranking,
+        "pegs": pegs,
+        "peg_radius": peg_radius,
+        "blades": blades,
+        "racer_radius": racer_radius,
+        "left": left,
+        "right": right,
+        "top_y": top_y,
+        "track_h": track_h,
+        "finish_y": finish_y,
+        "fps": fps,
+        "w": w,
+        "h": h,
+        "theme": {"floor": DROP_SKY_BLUE, "particle": (255, 255, 255)},  # generate_thumbnail needs these keys
+        "finale_start": len(frames) - finale_frames,
+        "seed": seed,
+    }
+
+
+def build_drop_clip(race):
+    """Renders simulate_drop's output. Camera/HUD/intro/win-banner scaffold
+    mirrors build_race_clip; the maze image is replaced by a procedurally
+    drawn peg field + side walls + spinning blades, redrawn fresh each
+    frame (blades rotate) instead of a single cached background image."""
+    from moviepy import VideoClip
+
+    w, h, fps = race["w"], race["h"], race["fps"]
+    frames = race["frames"]
+    racers = race["racers"]
+    n = race["n_racers"]
+    finale_start = race["finale_start"]
+    n_frames = len(frames)
+    left, right = race["left"], race["right"]
+    top_y, track_h, finish_y = race["top_y"], race["track_h"], race["finish_y"]
+    pegs = race["pegs"]
+    peg_radius = race["peg_radius"]
+    blades = race["blades"]
+    racer_radius = race["racer_radius"]
+    track_img_h = int(math.ceil(finish_y + h * 0.15))
+
+    ICON_SIZE = int(racer_radius * 2.4)
+    icons = [make_racer_icon(r["color"], ICON_SIZE) for r in racers]
+
+    HUD_MARGIN = int(h * 0.13)
+    viewport_h = h - HUD_MARGIN
+
+    CAMERA_SMOOTH = 0.06
+    LEAD_FRAC = 0.36
+    camera_tops = []
+    _prev = None
+    for fr in frames:
+        alive_y = [p[1] for p in fr["pos"] if p is not None]
+        lead_y = max(alive_y) if alive_y else track_img_h * 0.5
+        if _prev is None:
+            _prev = lead_y
+        else:
+            _prev = _prev + CAMERA_SMOOTH * (lead_y - _prev)
+        cam_top = _prev - viewport_h * LEAD_FRAC
+        cam_top = max(0.0, min(cam_top, max(0.0, track_img_h - viewport_h)))
+        camera_tops.append(cam_top)
+
+    title_font = get_font(int(h * 0.032))
+    counter_font = get_font(int(h * 0.028))
+    win_font = get_font(int(h * 0.052))
+    count_font = get_font(int(h * 0.11))
+    finish_pop_font = get_font(int(h * 0.020))
+
+    title_text = f"{n}-Way Marble Drop"
+    win_text_template = _pick_variant(race["seed"], "wintext", WIN_TEXT_TEMPLATES)
+    go_word = _pick_variant(race["seed"], "goword", FIGHT_WORD_TEMPLATES)
+
+    ambient_particles = _make_ambient_particles(race["seed"], 14, w, h)
+    intro_frames = int(INTRO_SECONDS * fps)
+
+    BORDER_COLOR = (255, 255, 255)  # thick white side rails, playful contrast on sky-blue
+
+    def _draw_track(crop_top, crop_bottom, blade_angles):
+        img = Image.new("RGBA", (w, crop_bottom - crop_top), (*DROP_SKY_BLUE, 255))
+        d = ImageDraw.Draw(img, "RGBA")
+        for (px, py, pcolor) in pegs:
+            ry = py - crop_top
+            if -peg_radius <= ry <= img.height + peg_radius:
+                pdark = tuple(max(0, c - 60) for c in pcolor)
+                d.ellipse([px - peg_radius, ry - peg_radius, px + peg_radius, ry + peg_radius],
+                          fill=(*pcolor, 255), outline=(*pdark, 255), width=3)
+        for wx in (left, right):
+            d.line([(wx, 0), (wx, img.height)], fill=(*BORDER_COLOR, 255), width=10)
+        for bl, ang in zip(blades, blade_angles):
+            bx, by = bl["body"].position
+            ry = by - crop_top
+            half_len = bl["len"] / 2
+            rad = math.radians(-ang)
+            dx, dy = math.cos(rad) * half_len, math.sin(rad) * half_len
+            bcolor = bl["color"]
+            bdark = tuple(max(0, c - 60) for c in bcolor)
+            d.line([(bx - dx, ry - dy), (bx + dx, ry + dy)], fill=(*bcolor, 255),
+                   width=int(bl["thickness"]))
+            for sign in (-1, 1):
+                d.ellipse([bx + sign * dx - 5, ry + sign * dy - 5, bx + sign * dx + 5, ry + sign * dy + 5],
+                          fill=(*bdark, 255))
+        fin_ry = finish_y - crop_top
+        if 0 <= fin_ry <= img.height:
+            d.rectangle([left, fin_ry - 6, right, fin_ry + 6], fill=(60, 210, 100, 255))
+            fin_font = get_font(int(h * 0.03))
+            ftext = "FINISH"
+            ftw = d.textlength(ftext, font=fin_font)
+            d.text((left + (right - left) / 2 - ftw / 2, fin_ry + 10), ftext, font=fin_font,
+                   fill=(255, 255, 255, 255), stroke_width=3, stroke_fill=(0, 0, 0, 255))
+        return img
+
+    def make_frame(t):
+        raw_idx = int(round(t * fps))
+        in_intro = raw_idx < intro_frames
+        idx = 0 if in_intro else min(n_frames - 1, raw_idx - intro_frames)
+        st = frames[idx]
+        cam_top = camera_tops[0] if in_intro else camera_tops[idx]
+
+        crop_top = int(cam_top)
+        crop_bottom = min(track_img_h, crop_top + viewport_h)
+        track_slice = _draw_track(crop_top, crop_bottom, st.get("blade_angles", [0, 0]))
+        img = Image.new("RGBA", (w, h), (*DROP_SKY_BLUE, 255))
+        img.paste(track_slice, (0, HUD_MARGIN))
+
+        d = ImageDraw.Draw(img, "RGBA")
+
+        for p in ambient_particles:
+            twinkle = 0.5 + 0.5 * math.sin(t * 1.6 + p["phase"])
+            r = p["r"]
+            alpha = int(50 + 90 * twinkle)
+            d.ellipse([p["x"] - r, p["y"] - r, p["x"] + r, p["y"] + r], fill=(255, 255, 255, alpha))
+
+        d.rectangle([0, 0, w, HUD_MARGIN], fill=(20, 20, 26, 235))
+        tw = d.textlength(title_text, font=title_font)
+        d.text((w / 2 - tw / 2, h * 0.02), title_text, font=title_font, fill=(255, 255, 255, 255))
+        counter_text = "GRAVITY DOES THE REST"
+        cw = d.textlength(counter_text, font=counter_font)
+        d.text((w / 2 - cw / 2, h * 0.075), counter_text, font=counter_font, fill=(255, 220, 60, 255))
+
+        if not in_intro:
+            for fi in range(max(0, idx - 6), idx + 1):
+                if fi not in race["bump_frame_flags"]:
+                    continue
+                bx, by, intensity, kind = race["bump_frame_flags"][fi]
+                age = idx - fi
+                if age <= 5:
+                    a = max(0, int(180 * intensity * (1 - age / 5.0)))
+                    ry = by - crop_top + HUD_MARGIN
+                    rr = 6 + age * 2
+                    color = (255, 220, 120) if kind == "wall" else (255, 255, 255)
+                    d.ellipse([bx - rr, ry - rr, bx + rr, ry + rr], outline=(*color, a), width=3)
+
+            for fi in range(max(0, idx - 20), idx + 1):
+                if fi not in race["finish_frame_flags"]:
+                    continue
+                age = idx - fi
+                if age > 24:
+                    continue
+                pa = max(0, int(255 * (1 - age / 24.0)))
+                for (ridx, fx, fy) in race["finish_frame_flags"][fi]:
+                    ry = fy - crop_top + HUD_MARGIN - age * 1.5
+                    label = f"{racers[ridx]['name']} FINISHED!"
+                    lw = d.textlength(label, font=finish_pop_font)
+                    d.text((fx - lw / 2, ry), label, font=finish_pop_font, fill=(255, 255, 255, pa),
+                           stroke_width=2, stroke_fill=(0, 0, 0, pa))
+
+        for i in range(n):
+            pos = st["pos"][i]
+            if pos is None:
+                continue
+            x, y, ang = pos
+            ry = y - crop_top + HUD_MARGIN
+            if ry < HUD_MARGIN - ICON_SIZE or ry > h + ICON_SIZE:
+                continue
+            icon = icons[i].rotate(ang, resample=Image.BICUBIC)
+            img.alpha_composite(icon, (int(x - icon.width / 2), int(ry - icon.height / 2)))
+
+        if in_intro:
+            phase = t / INTRO_SECONDS * 3
+            if phase < 1:
+                num = "3"
+            elif phase < 2:
+                num = "2"
+            elif phase < 2.6:
+                num = "1"
+            else:
+                num = go_word
+            cw2 = d.textlength(num, font=count_font)
+            d.text((w / 2 - cw2 / 2, h * 0.42), num, font=count_font, fill=(255, 255, 255, 255),
+                   stroke_width=6, stroke_fill=(0, 0, 0, 255))
+
+        if idx >= finale_start and not in_intro:
+            win_text = win_text_template.format(name=race["winner_name"])
+            fade_in = min(1.0, (idx - finale_start) / (fps * 0.3))
+            wa = int(255 * fade_in)
+            wtw = d.textlength(win_text, font=win_font)
+            d.rectangle([0, h * 0.42, w, h * 0.42 + h * 0.10], fill=(0, 0, 0, int(150 * fade_in)))
+            d.text((w / 2 - wtw / 2, h * 0.44), win_text, font=win_font, fill=(255, 215, 60, wa),
+                   stroke_width=5, stroke_fill=(0, 0, 0, wa))
+
+        return np.array(img.convert("RGB"))
+
+    duration = INTRO_SECONDS + n_frames / fps
+    clip = VideoClip(make_frame, duration=duration)
+    clip.fps = fps
+    return clip
 
 
 # --- Wording variety --------------------------------------------------
@@ -1938,15 +2428,21 @@ def build_battle_clip(race):
             # rather than a 0-alpha no-op blend.
             t_phys = min(max_seconds, idx * steps_per_frame / PHYSICS_HZ)
             top_y, s_left, s_right, _vy, _vx = zone_state_fn(t_phys)
+            # Punch the hole a half-wall-thickness past each wall's
+            # centerline (toward the danger side) — the wall itself
+            # occupies that band, so a racer resting against its safe-side
+            # face still renders cleanly inside the untinted area instead
+            # of looking like it's standing in the danger tint.
+            wt_margin = geo.wall_thickness / 2
             danger = Image.new("RGBA", (w, h), (0, 0, 0, 0))
             dd = ImageDraw.Draw(danger)
             arena_top_sy = max(HUD_MARGIN, zone_top - crop_top + HUD_MARGIN)
             arena_bottom_sy = min(h, zone_bottom - crop_top + HUD_MARGIN)
             if arena_bottom_sy > arena_top_sy:
                 dd.rectangle([0, arena_top_sy, w, arena_bottom_sy], fill=(200, 30, 30, 85))
-            safe_sy0 = max(HUD_MARGIN, top_y - crop_top + HUD_MARGIN)
+            safe_sy0 = max(HUD_MARGIN, top_y - wt_margin - crop_top + HUD_MARGIN)
             if arena_bottom_sy > safe_sy0:
-                dd.rectangle([s_left, safe_sy0, s_right, arena_bottom_sy], fill=(0, 0, 0, 0))
+                dd.rectangle([s_left - wt_margin, safe_sy0, s_right + wt_margin, arena_bottom_sy], fill=(0, 0, 0, 0))
             img.alpha_composite(danger)
             d = ImageDraw.Draw(img, "RGBA")
 

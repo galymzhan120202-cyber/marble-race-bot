@@ -96,6 +96,47 @@ file is the durable record.
 - [x] `.github/workflows/battle.yml` added (cron `15 11 * * *`, i.e. the
       16:15 KZ slot removed from `upload.yml`) — same total of 3 daily
       Shorts across the two workflows.
+- [x] Fixed a real bug post-launch: racers could visibly sit inside the
+      red danger tint instead of being cleanly excluded — the closing
+      kinematic wall does push them, but a racer's own steering force
+      (still aiming at a pickup/enemy on the wrong side) could fight that
+      push for a while first. Fix: in the physics step loop, a racer whose
+      position is already outside the current safe funnel gets its target
+      force-overridden to a direct escape point (with a stronger steer
+      gain) instead of whatever the AI was aiming at, until it's back
+      inside. Render-side, the tint's punched "safe hole" also grew by
+      half the wall's thickness so a racer resting against the wall's
+      near face renders cleanly inside the untinted area.
+
+## Marble Drop mode (added 2026-08-27)
+
+- [x] Third video mode, architecturally unlike race/battle: **no maze, no
+      steering AI at all**. Per a detailed Unity/Pygame-style spec the user
+      provided (gravity + collisions only, dynamic leader-follow camera,
+      finish trigger at the bottom) — adapted to this project's actual
+      stack (pymunk physics + PIL/moviepy offline video render, not
+      pygame/live display). Squares spawn at the top of a long vertical
+      track under real gravity and fall through a staggered Plinko peg
+      field plus two spinning kinematic blades; first to cross the finish
+      line wins.
+- [x] `race_sim.py`: `simulate_drop`/`build_drop_clip`. "Vibrant & Cartoon"
+      art style per user follow-up: fixed sky-blue background
+      (`DROP_SKY_BLUE`), candy-colored racers (`DROP_CANDY_COLORS`,
+      overriding `RACER_POOL`'s house colors for this mode only — name/
+      weight/confusion still come from the pool), bright orange/white/
+      purple pegs+blades (`DROP_OBSTACLE_COLORS`), high elasticity
+      (0.8-0.88) everywhere for playful bounciness.
+      Fixed one real bug post-launch: racer size was originally derived
+      from `n_racers` alone (same formula as race mode's cell sizing),
+      which made racers *wider than the gaps between pegs* at low racer
+      counts — permanently wedged, nobody ever finished. Fixed by sizing
+      `racer_radius` as a fixed fraction of track width and sizing peg
+      spacing in racer-radius units with a guaranteed-safe gap margin.
+- [x] New `drop_gen.py` (mirrors `battle_gen.py`'s structure).
+- [x] `scheduler.py`/`.github/workflows/drop.yml`: own daily slot
+      (`DROP_POST_TIME`, default 14:15 UTC / 19:15 KZ), independent of the
+      Shorts/Battle rotation and the Tournament's 4-day cadence — same
+      pattern as Tournament's own `schedule.every(...)` job.
 
 ## Still to do
 

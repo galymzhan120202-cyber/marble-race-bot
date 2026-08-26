@@ -28,8 +28,10 @@ logger = logging.getLogger(__name__)
 from video_gen import generate_video, send_telegram
 from tournament_gen import generate_tournament_video
 from battle_gen import generate_battle_video
+from drop_gen import generate_drop_video
 
 TOURNAMENT_TIME = os.getenv('TOURNAMENT_POST_TIME', '08:15')
+DROP_TIME = os.getenv('DROP_POST_TIME', '14:15')
 
 # One of the daily POST_TIMES slots generates a Battle Royale video instead
 # of a maze race — keeps total daily Shorts volume unchanged while adding
@@ -59,6 +61,15 @@ def tournament_job():
     except Exception as e:
         logger.error(f"❌ Tournament жүктеу сәтсіз: {e}")
 
+def drop_job():
+    logger.info("⏰ Marble Drop жүктеу басталды...")
+    send_telegram("⏰ <b>Marble Drop жүктеу басталды</b>")
+    try:
+        generate_drop_video()
+        logger.info("✅ Marble Drop жүктеу сәтті аяқталды")
+    except Exception as e:
+        logger.error(f"❌ Marble Drop жүктеу сәтсіз: {e}")
+
 for i, t in enumerate(POST_TIMES, start=1):
     schedule.every().day.at(t).do(make_job(i))
     logger.info(f"  ✓ {i}-жүктеу: {t} UTC ({int(t.split(':')[0])+5:02d}:{t.split(':')[1]} KZ)")
@@ -73,14 +84,24 @@ schedule.every(4).days.at(TOURNAMENT_TIME).do(tournament_job)
 logger.info(f"  ✓ Tournament: әр 4 күн сайын {TOURNAMENT_TIME} UTC "
             f"({int(TOURNAMENT_TIME.split(':')[0]) + 5:02d}:{TOURNAMENT_TIME.split(':')[1]} KZ)")
 
+# Marble Drop (gravity/Plinko mode) gets its own daily slot, independent of
+# both the Shorts POST_TIMES rotation and the 4-day Tournament cadence —
+# same "own schedule.every(...) job" pattern as Tournament above.
+schedule.every().day.at(DROP_TIME).do(drop_job)
+logger.info(f"  ✓ Marble Drop: күнде {DROP_TIME} UTC "
+            f"({int(DROP_TIME.split(':')[0]) + 5:02d}:{DROP_TIME.split(':')[1]} KZ)")
+
 kz_times = [f"{int(t.split(':')[0])+5:02d}:{t.split(':')[1]}" for t in POST_TIMES]
 kz_tournament = f"{int(TOURNAMENT_TIME.split(':')[0]) + 5:02d}:{TOURNAMENT_TIME.split(':')[1]}"
-logger.info(f"🚀 Maze Race Scheduler іске қосылды — күнде {len(POST_TIMES)} Shorts + әр 4 күн Tournament")
+kz_drop = f"{int(DROP_TIME.split(':')[0]) + 5:02d}:{DROP_TIME.split(':')[1]}"
+logger.info(f"🚀 Maze Race Scheduler іске қосылды — күнде {len(POST_TIMES)} Shorts + "
+            f"күнде 1 Marble Drop + әр 4 күн Tournament")
 logger.info("   Тоқтату үшін Ctrl+C")
 send_telegram(
     f"🚀 <b>Maze Race Scheduler іске қосылды</b>\n"
     f"📅 Shorts: күнде <b>{len(POST_TIMES)} видео</b>\n"
     f"🕐 Уақыттары (KZ): <b>{' / '.join(kz_times)}</b>\n"
+    f"🎯 Marble Drop: күнде, {kz_drop} (KZ)\n"
     f"🏆 Tournament: әр <b>4 күн</b>, {kz_tournament} (KZ)"
 )
 

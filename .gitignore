@@ -12,15 +12,18 @@ TEMP_MPY_*.mp4
 final_shorts.mp4
 final_tournament.mp4
 final_battle.mp4
+final_drop.mp4
 thumbnail.jpg
 tournament_thumbnail.jpg
 battle_thumbnail.jpg
+drop_thumbnail.jpg
 music/_openverse_temp.mp3
 
 # Логтар
 debug.log
 tournament_debug.log
 battle_debug.log
+drop_debug.log
 scheduler.log
 
 # Python
