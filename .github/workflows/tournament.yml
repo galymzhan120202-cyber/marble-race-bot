@@ -1,0 +1,70 @@
+name: Maze Race Tournament Upload
+
+# Long-form (~4-10 min) 16-racer bracket video, completely independent of
+# the Shorts schedule in upload.yml. Plain cron syntax can't express "every
+# 4 days" from an arbitrary start date, so this approximates it with fixed
+# day-of-month slots (1, 5, 9, 13, 17, 21, 25, 29 — i.e. every 4th day of
+# the month, with a shorter gap once a month where day 29 doesn't exist and
+# it lands on 25→1). Good enough for a low-frequency long-form upload; if
+# you need the interval exact, replace this with your own "has it been
+# >=4 days since last run" check (e.g. a committed timestamp file).
+on:
+  schedule:
+    - cron: '15 6 1,5,9,13,17,21,25,29 * *'   # 11:15 KZ
+  workflow_dispatch:        # қолмен де іске қосуға болады
+
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Кодты алу
+        uses: actions/checkout@v4
+
+      - name: Python орнату
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: FFmpeg орнату
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg fonts-dejavu
+
+      - name: Python кітапханаларын орнату
+        run: pip install --quiet -r requirements.txt
+
+      - name: YouTube деректерін қалпына келтіру
+        env:
+          MRACE_CLIENT_SECRETS_JSON: ${{ secrets.MRACE_CLIENT_SECRETS_JSON }}
+          MRACE_YOUTUBE_TOKEN_JSON: ${{ secrets.MRACE_YOUTUBE_TOKEN_JSON }}
+        run: |
+          echo "$MRACE_CLIENT_SECRETS_JSON" > client_secrets.json
+          echo "$MRACE_YOUTUBE_TOKEN_JSON" > youtube_token.json
+
+      - name: .env файлын құру
+        run: |
+          cat > .env << 'EOF'
+          TELEGRAM_NOTIFY_TOKEN=${{ secrets.MRACE_TELEGRAM_NOTIFY_TOKEN }}
+          TELEGRAM_NOTIFY_CHAT_ID=${{ secrets.MRACE_TELEGRAM_NOTIFY_CHAT_ID }}
+          MUSIC_VOLUME=0.15
+          SFX_VOLUME=0.9
+          YOUTUBE_CATEGORY_ID=20
+          YOUTUBE_PRIVACY_STATUS=public
+          YOUTUBE_MADE_FOR_KIDS=false
+          VIDEO_CODEC=libx264
+          AUDIO_CODEC=aac
+          VIDEO_PRESET=ultrafast
+          MAX_RETRIES=3
+          RETRY_DELAY=2
+          TOURNAMENT_VIDEO_WIDTH=1920
+          TOURNAMENT_VIDEO_HEIGHT=1080
+          TOURNAMENT_VIDEO_FPS=30
+          TOURNAMENT_HEAT_ROWS=32
+          TOURNAMENT_HEAT_MIN_SECONDS=18
+          TOURNAMENT_HEAT_MAX_SECONDS=55
+          EOF
+
+      - name: Tournament видео құру және YouTube-ке жүктеу
+        run: python -c "from tournament_gen import generate_tournament_video; generate_tournament_video()"
