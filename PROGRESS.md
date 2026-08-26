@@ -46,6 +46,18 @@ file is the durable record.
 
 - [x] Code pushed to GitHub: https://github.com/galymzhan120202-cyber/marble-race-bot
       (main branch, initial commit `c18bb9e`, no secrets included).
+- [x] Channel branding (banner + avatar) generated via `generate_branding.py`
+      (reuses race_sim's own `make_racer_icon`/`MAZE_THEMES`, no external
+      assets) and published to the channel via YouTube Studio.
+- [x] Channel keywords set in Studio Settings (marble race, maze race,
+      satisfying video, physics simulation, who wins, marble run, tournament
+      bracket, oddly satisfying, race simulator, shorts). Upload-defaults
+      section intentionally left untouched — irrelevant since `video_gen.py`
+      sets title/description/tags/privacy explicitly per-video via the API.
+- [x] User flagged the racer icon's front "pennant" nub as visually
+      unpleasant (muddy/semi-transparent, clashes with body color) — sent to
+      the fork agent currently doing the visual-polish pass to fix alongside
+      everything else it's already touching.
 
 ## Still to do
 
