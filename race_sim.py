@@ -831,6 +831,22 @@ def simulate_race(w, h, seed, fps=24, max_seconds=28, min_seconds=13, n_racers=N
     stuck_check_pos = [None] * n_racers
     stuck_counters = [0] * n_racers
 
+    # Progress-based stall detection: the raw displacement check above
+    # samples RAW position every 0.5s, which two racers deadlocked
+    # head-to-head in a 1-wide corridor can fool — their mutual elastic
+    # bounce/jitter keeps bumping them a few pixels each way, so displacement
+    # between samples can clear stuck_dist_threshold even though neither is
+    # making any actual progress through the maze. This checks real
+    # progress instead (the flood-fill distance to the finish from each
+    # racer's current cell) on a longer window, and — since a plain forward
+    # nudge is exactly what got them into this head-on deadlock in the
+    # first place — corrects with a forward+sideways impulse to help one
+    # of them route around the other.
+    PROGRESS_CHECK_STEPS = int(1.2 * PHYSICS_HZ)
+    PROGRESS_STALL_LIMIT = 2
+    progress_last_dist = [None] * n_racers
+    progress_stall = [0] * n_racers
+
     def _recompute_target(i):
         """Returns True when this call landed on a real fork (more than one
         open neighbor) — the caller uses that to trigger a brief steering
@@ -1019,6 +1035,34 @@ def simulate_race(w, h, seed, fps=24, max_seconds=28, min_seconds=13, n_racers=N
                     recovery_until[i] = 0  # let steering re-engage immediately, not fight the nudge
                     stuck_counters[i] = 0
 
+        if step_counter["n"] % PROGRESS_CHECK_STEPS == 0:
+            for i in range(n_racers):
+                if not active[i]:
+                    continue
+                r, c = last_cell[i]
+                cur_dist = dist_field[r][c]
+                if cur_dist is None:
+                    continue
+                prev_dist = progress_last_dist[i]
+                progress_last_dist[i] = cur_dist
+                if prev_dist is not None and cur_dist >= prev_dist:
+                    progress_stall[i] += 1
+                else:
+                    progress_stall[i] = 0
+                if progress_stall[i] >= PROGRESS_STALL_LIMIT:
+                    pos_now = bodies[i].position
+                    tx, ty = target[i]
+                    ddx, ddy = tx - pos_now.x, ty - pos_now.y
+                    ddist = math.hypot(ddx, ddy) or 1.0
+                    ndx, ndy = ddx / ddist, ddy / ddist
+                    side = per_racer_rng[i].choice([-1, 1])
+                    sdx, sdy = -ndy * side, ndx * side
+                    nudge = MAX_SPEED * racers[i]["weight"] * 2.2
+                    bodies[i].apply_impulse_at_world_point(
+                        ((ndx * 0.6 + sdx * 0.7) * nudge, (ndy * 0.6 + sdy * 0.7) * nudge), pos_now)
+                    recovery_until[i] = 0
+                    progress_stall[i] = 0
+
         if step_counter["n"] % steps_per_frame == 0:
             pos = []
             for i in range(n_racers):
@@ -1179,22 +1223,35 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=32, min_seconds=14, n_racers
     shrink_end = BATTLE_ZONE_SHRINK_END_FRAC * max_seconds
     shrink_dur = max(0.001, shrink_end - shrink_start)
     top_end_y = bottom - geo.cell * BATTLE_ZONE_END_MARGIN_ROWS
+    # Left/right no longer narrow — see _zone_state docstring for why.
     half_w_start = (right - left) / 2
-    half_w_end = geo.cell * BATTLE_ZONE_MIN_HALF_WIDTH_CELLS
 
     def _zone_state(t_now):
-        """Returns (top_y, left_x, right_x, vy, vx) for the three closing
-        walls at time t_now — position AND an analytic constant velocity,
-        so a racer caught against a wall is carried along by it (pymunk's
+        """Returns (top_y, left_x, right_x, vy, vx) for the closing zone at
+        time t_now — position AND an analytic constant velocity, so a racer
+        caught against the wall is carried along by it (pymunk's
         kinematic-vs-dynamic contact resolution uses the kinematic body's
-        velocity, not just its position delta)."""
+        velocity, not just its position delta).
+
+        Only the TOP wall actually closes in; left/right stay pinned at the
+        full arena width. A first version also narrowed left/right toward
+        a fixed center corridor, but that's a purely geometric rectangle
+        with no idea where the maze's actual corridors run — the moment it
+        narrowed past whatever column the one true path to the finish
+        happened to route through, a racer on the wrong side was walled
+        off from the finish *permanently*, not just delayed (confirmed via
+        batch simulation: racers stuck motionless for 15+ seconds, not the
+        few-second stalls the progress-nudge above is built to clear). A
+        top-only wall can't do this: the finish sits at the maze's max-y
+        row, so BFS distance to it strictly decreases with y regardless of
+        column, and the wall only ever excludes the region *above* itself
+        — never the only route to a cell that's further down.
+        """
         frac = min(1.0, max(0.0, (t_now - shrink_start) / shrink_dur))
         top_y = top + frac * (top_end_y - top)
-        half_w = half_w_start + frac * (half_w_end - half_w_start)
         moving = shrink_start <= t_now <= shrink_end
         vy = (top_end_y - top) / shrink_dur if moving else 0.0
-        vx = (half_w_end - half_w_start) / shrink_dur if moving else 0.0
-        return top_y, zone_cx - half_w, zone_cx + half_w, vy, vx
+        return top_y, zone_cx - half_w_start, zone_cx + half_w_start, vy, 0.0
 
     n_pickups = max(2, n_racers // 2)
     pickup_cells = _place_pickups(open_right, open_down, cols, rows, maze_rng, n_pickups)
@@ -1294,6 +1351,16 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=32, min_seconds=14, n_racers
     stuck_check_pos = [None] * n_racers
     stuck_counters = [0] * n_racers
 
+    # See simulate_race's identical block for why this exists alongside
+    # the raw-displacement check above: two racers deadlocked head-to-head
+    # in a 1-wide corridor can bounce/jitter enough between 0.5s samples to
+    # look like they're still moving, so this checks real flood-fill
+    # progress toward the finish on a longer window instead.
+    PROGRESS_CHECK_STEPS = int(1.2 * PHYSICS_HZ)
+    PROGRESS_STALL_LIMIT = 2
+    progress_last_dist = [None] * n_racers
+    progress_stall = [0] * n_racers
+
     AWARENESS_PICKUP = geo.cell * 6
     DANGER_RADIUS = geo.cell * 4
     AWARENESS_CHASE = geo.cell * 6
@@ -1326,6 +1393,22 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=32, min_seconds=14, n_racers
         if not candidates:
             return False
         x, y = bodies[i].position
+
+        # Outside the current safe funnel (the closing wall has swept past
+        # this cell) — override every other priority with a straight
+        # maze-graph move toward the finish, exactly like the fallback
+        # wander below. Earlier this used a raw XY escape point instead,
+        # which ignored maze wall connectivity entirely: aiming a racer at
+        # a geometric point behind a wall just pinned it against that wall
+        # (steering fighting the wall) instead of actually leading it out,
+        # since a real exit can require moving through an open neighbor
+        # cell that isn't a straight line toward that point at all.
+        top_y, s_left, s_right, _vy, _vx = _zone_state(step_counter["n"] / PHYSICS_HZ)
+        if x < s_left or x > s_right or y < top_y:
+            best = min(dist_field[nr][nc] for (nr, nc) in candidates)
+            best_candidates = [n for n in candidates if dist_field[n[0]][n[1]] == best]
+            target[i] = geo.cell_center(*per_racer_rng[i].choice(best_candidates))
+            return len(candidates) > 1
 
         if not armed[i]:
             best_pickup, best_d = None, AWARENESS_PICKUP
@@ -1513,19 +1596,17 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=32, min_seconds=14, n_racers
                 next_decision[i] = step_counter["n"] + DECISION_STEPS
 
             # If the closing zone has already swept past this racer's
-            # position, override its target for this step with a direct
-            # escape point back into the safe funnel instead of whatever
-            # the AI was steering toward — the kinematic wall alone will
-            # eventually push a racer clear, but its steering force can
-            # fight that push for a while first (aiming back at a pickup
-            # or an enemy on the wrong side of the wall), which read as
-            # the racer visibly sitting inside the tinted danger area
-            # instead of being cleanly excluded from it.
-            if x < s_left or x > s_right or y < top_y:
-                tx = min(max(x, s_left + geo.racer_radius * 1.5), s_right - geo.racer_radius * 1.5)
-                ty = max(y, top_y) + geo.cell * 0.8
-            else:
-                tx, ty = target[i]
+            # position, force a fresh (maze-graph-based, always-reachable)
+            # target every step instead of waiting for the next cell-change
+            # or decision tick — the kinematic wall alone will eventually
+            # push a racer clear, but letting its steering keep fighting
+            # for a pickup/enemy on the wrong side for a second or two first
+            # is what read as the racer visibly sitting inside the tinted
+            # danger area instead of being cleanly excluded from it.
+            outside_zone = x < s_left or x > s_right or y < top_y
+            if outside_zone:
+                _battle_recompute_target(i)
+            tx, ty = target[i]
             dx, dy = tx - x, ty - y
             dist = math.hypot(dx, dy) or 1.0
             speed_scale = min(1.0, max(0.35, dist / SLOWDOWN_RADIUS))
@@ -1533,7 +1614,7 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=32, min_seconds=14, n_racers
             desired_vy = dy / dist * MAX_SPEED * speed_mult[i] * speed_scale
             vx_, vy_ = bodies[i].velocity
             steer_gain = STEER_GAIN * steer_mult[i]
-            if x < s_left or x > s_right or y < top_y:
+            if outside_zone:
                 steer_gain *= 2.2  # escape urgently, not at normal cruising authority
             if step_counter["n"] < recovery_until[i]:
                 remaining = (recovery_until[i] - step_counter["n"]) / RECOVERY_STEPS
@@ -1573,6 +1654,34 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=32, min_seconds=14, n_racers
                         (ddx / ddist * nudge, ddy / ddist * nudge), pos_now)
                     recovery_until[i] = 0
                     stuck_counters[i] = 0
+
+        if step_counter["n"] % PROGRESS_CHECK_STEPS == 0:
+            for i in range(n_racers):
+                if not active[i]:
+                    continue
+                r, c = last_cell[i]
+                cur_dist = dist_field[r][c]
+                if cur_dist is None:
+                    continue
+                prev_dist = progress_last_dist[i]
+                progress_last_dist[i] = cur_dist
+                if prev_dist is not None and cur_dist >= prev_dist:
+                    progress_stall[i] += 1
+                else:
+                    progress_stall[i] = 0
+                if progress_stall[i] >= PROGRESS_STALL_LIMIT:
+                    pos_now = bodies[i].position
+                    tx, ty = target[i]
+                    ddx, ddy = tx - pos_now.x, ty - pos_now.y
+                    ddist = math.hypot(ddx, ddy) or 1.0
+                    ndx, ndy = ddx / ddist, ddy / ddist
+                    side = per_racer_rng[i].choice([-1, 1])
+                    sdx, sdy = -ndy * side, ndx * side
+                    nudge = MAX_SPEED * racers[i]["weight"] * 2.2
+                    bodies[i].apply_impulse_at_world_point(
+                        ((ndx * 0.6 + sdx * 0.7) * nudge, (ndy * 0.6 + sdy * 0.7) * nudge), pos_now)
+                    recovery_until[i] = 0
+                    progress_stall[i] = 0
 
         if step_counter["n"] % steps_per_frame == 0:
             pos = []

@@ -138,6 +138,55 @@ file is the durable record.
       Shorts/Battle rotation and the Tournament's 4-day cadence — same
       pattern as Tournament's own `schedule.every(...)` job.
 
+## Race/Battle physics audit (2026-08-27)
+
+User asked for a systematic self-audit of race/battle simulation logic
+rather than one-off spot fixes. Ran batch diagnostics (40-60 seeds each)
+checking for: NaN/non-finite positions, races where nobody finishes,
+battles where nobody finishes/gets eliminated/all-alive-at-timeout. Found
+and fixed three real bugs, in the order the batch runs surfaced them:
+
+- [x] **Race mode deadlock** (was 1/40 seeds, now 0/60): two racers
+      head-to-head in a 1-wide corridor could deadlock for the *entire*
+      race — their mutual elastic bounce/jitter displaces them a few
+      pixels each way every 0.5s sample, which was enough to clear the
+      existing raw-displacement stuck-check's threshold even though
+      neither was making any real progress. Fix: a second, longer-window
+      check (`PROGRESS_CHECK_STEPS`/`PROGRESS_STALL_LIMIT`) that compares
+      real flood-fill distance-to-finish instead of raw position, and
+      corrects with a forward+sideways impulse (not just forward, since
+      forward-only is what caused the head-on deadlock to begin with).
+      Added to both `simulate_race` and `simulate_battle`.
+- [x] **Battle mode zone-escape targeting a wall** (contributed to ~28%
+      of battles ending in "nothing happened" — no finish, no
+      elimination, everyone still alive at timeout): the zone-escape fix
+      from the previous session (see "Battle mode" section above) aimed a
+      racer at a raw XY point when outside the safe funnel, with **no
+      awareness of maze wall connectivity** — if a wall stood between the
+      racer and that point, steering just pinned it against the wall
+      instead of leading it out, for up to 15+ seconds at a time. Fix:
+      the escape case now reuses the exact same maze-graph
+      (`open_neighbors` + `dist_field`) best-next-cell logic as the normal
+      finish-seeking fallback, guaranteeing a reachable target.
+- [x] **Battle mode zone could permanently seal off the finish** (the
+      real root cause behind the remaining stuck cases — confirmed via
+      15+ second motionless stretches that neither fix above could clear,
+      because there was genuinely no path): the zone was a generic
+      shrinking *rectangle* with no idea where the maze's corridors
+      actually run. Once the left/right walls narrowed past whatever
+      column the maze's one true route to the finish happened to pass
+      through, any racer still on the wrong side was walled off
+      *permanently*. Fix: left/right no longer narrow at all — only the
+      **top** wall closes in. This is provably safe instead of just
+      empirically better: the finish sits at the maze's max-y row, so
+      BFS distance-to-finish strictly decreases with y regardless of
+      column, and a top-only wall only ever excludes the region *above*
+      itself, never the only route to something further down.
+      Down from ~28% "nothing happened" to ~13%, and the remaining cases
+      are legitimate close-finish congestion in the last few seconds
+      (racers still visibly progressing throughout, just don't quite
+      make it before the time cap) rather than dead/frozen simulations.
+
 ## Still to do
 
 - [ ] Do a real (confirmed, explicit) first upload test — either manually
