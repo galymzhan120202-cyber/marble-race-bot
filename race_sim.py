@@ -468,7 +468,7 @@ class MazeGeometry:
         self.cols, self.rows = cols, rows
         self.border_w = w * 0.045
         self.cell = (w - 2 * self.border_w) / cols
-        self.wall_thickness = self.cell * 0.14
+        self.wall_thickness = self.cell * 0.30
         self.racer_radius = (self.cell - self.wall_thickness) * 0.30
         self.top_border = self.border_w
         self.finish_depth = self.cell * 1.3
@@ -531,21 +531,10 @@ def build_wall_segments(geo, open_right, open_down, finish_col):
 
 def draw_maze_background(geo, open_right, open_down, finish_col, theme):
     w, h = int(geo.w), int(math.ceil(geo.img_h))
+    # Flat solid floor fill — reference "board game" look (flat pastel floor,
+    # chunky flat-color walls, no gradients/texture) reads cleaner and more
+    # legible in a muted autoplay feed than a textured/shaded floor did.
     img = Image.new("RGBA", (w, h), (*theme["floor"], 255))
-
-    # Subtle deterministic floor mottling (a coordinate-driven sine field,
-    # not real per-pixel noise, so it's cheap and needs no extra seed
-    # threading) — a perfectly flat single-color fill reads as an obviously
-    # placeholder/generated backdrop; this gives the floor a faint sense of
-    # material instead, without touching any per-theme color values.
-    floor_np = np.array(img, dtype=np.float32)
-    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
-    mottle = (np.sin(xx * 0.045) * np.sin(yy * 0.045 + 1.3) +
-              np.sin(xx * 0.011 + 2.0) * np.sin(yy * 0.017))
-    mottle = (mottle * 6.0)[:, :, None]
-    floor_np[:, :, :3] = np.clip(floor_np[:, :, :3] + mottle, 0, 255)
-    img = Image.fromarray(floor_np.astype(np.uint8), mode="RGBA")
-
     d = ImageDraw.Draw(img, "RGBA")
 
     left = geo.border_w
@@ -597,26 +586,24 @@ def draw_maze_background(geo, open_right, open_down, finish_col, theme):
     d.text((left + (right - left) / 2 - stw / 2, top - geo.border_w * 0.5), stext,
            font=start_font, fill=(20, 20, 24, 255))
 
-    # walls, drawn as thick rounded lines with a light top-left bevel edge
+    # Walls drawn as flat filled rectangles (axis-aligned, since every
+    # segment from build_wall_segments is purely horizontal or vertical),
+    # each extended half a thickness past its own endpoints so adjoining
+    # segments' rectangles overlap and self-fill the corner between them —
+    # gives the reference's crisp square-block wall look with no separate
+    # corner-patching step, instead of the old centered-line-plus-round-cap
+    # "tube" rendering.
     wt = geo.wall_thickness
     wall_color = theme["wall"]
-    bevel = tuple(min(255, c + 45) for c in wall_color)
-    shade = tuple(max(0, c - 40) for c in wall_color)
     for (p1, p2) in build_wall_segments(geo, open_right, open_down, finish_col):
-        d.line([p1, p2], fill=(*wall_color, 255), width=int(wt))
-        d.ellipse([p1[0] - wt / 2, p1[1] - wt / 2, p1[0] + wt / 2, p1[1] + wt / 2], fill=(*wall_color, 255))
-        d.ellipse([p2[0] - wt / 2, p2[1] - wt / 2, p2[0] + wt / 2, p2[1] + wt / 2], fill=(*wall_color, 255))
-        bx, by = p2[0] - p1[0], p2[1] - p1[1]
-        length = math.hypot(bx, by) or 1.0
-        nx, ny = -by / length, bx / length
-        off = wt * 0.28
-        # bevel highlight (top-left face) + a matching darker shade line on
-        # the opposite face, so a wall reads as a slightly raised/rounded
-        # edge instead of one flat-shaded rectangle.
-        d.line([(p1[0] + nx * off, p1[1] + ny * off), (p2[0] + nx * off, p2[1] + ny * off)],
-               fill=(*bevel, 140), width=max(1, int(wt * 0.18)))
-        d.line([(p1[0] - nx * off, p1[1] - ny * off), (p2[0] - nx * off, p2[1] - ny * off)],
-               fill=(*shade, 130), width=max(1, int(wt * 0.18)))
+        x0, y0 = p1
+        x1, y1 = p2
+        if y0 == y1:
+            d.rectangle([min(x0, x1) - wt / 2, y0 - wt / 2, max(x0, x1) + wt / 2, y0 + wt / 2],
+                        fill=(*wall_color, 255))
+        else:
+            d.rectangle([x0 - wt / 2, min(y0, y1) - wt / 2, x0 + wt / 2, max(y0, y1) + wt / 2],
+                        fill=(*wall_color, 255))
 
     return img
 
