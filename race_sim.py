@@ -46,7 +46,19 @@ RACER_POOL = [
     {"name": "Ruby", "color": (190, 32, 72), "weight": 1.08, "confusion": 0.07},
 ]
 
-N_RACERS_WEIGHTS = {6: 25, 7: 30, 8: 30, 9: 15}
+# Full 2-8 range (was a narrow 6-9 window) — smaller races are punchier/
+# easier to follow, larger ones are more chaotic; weights skew toward the
+# middle so most uploads land in the readable 4-6 range with 2/3 and 7/8 as
+# real but less frequent variety, mirroring weapon-ball-bot's
+# N_FIGHTERS_WEIGHTS skew pattern.
+N_RACERS_WEIGHTS = {2: 6, 3: 10, 4: 16, 5: 20, 6: 20, 7: 16, 8: 12}
+
+
+def _det_jitter(n):
+    """Deterministic pseudo-random float in [0, 1) from an integer — cheap
+    per-frame shake-direction jitter with no RNG object to thread through."""
+    x = math.sin(n * 12.9898) * 43758.5453
+    return x - math.floor(x)
 
 
 def _color_dist(c1, c2):
@@ -196,6 +208,213 @@ def bfs_distance_field(open_right, open_down, cols, rows, finish_cell):
     return dist
 
 
+SPAWN_ROWS = 2  # how many top rows racers can spawn across for larger n_racers
+
+
+def _maze_symmetric(cols, rows, rng):
+    """Independently generates a spanning tree on the LEFT half, mirrors it
+    onto the right half, then stitches the two halves together with a
+    handful of explicit seam connectors down the middle — provably fully
+    connected (each half is its own spanning tree; any single seam
+    connector bridges the two), and reads as a genuinely left-right
+    symmetric layout rather than just a recolor of the classic maze."""
+    half = max(2, cols // 2)
+    l_right, l_down = generate_maze(half, rows, rng)
+    open_right = [[False] * (cols - 1) for _ in range(rows)]
+    open_down = [[False] * cols for _ in range(rows - 1)]
+    for r in range(rows):
+        for c in range(half - 1):
+            open_right[r][c] = l_right[r][c]
+            mc = cols - 1 - c
+            if mc - 1 >= 0:
+                open_right[r][mc - 1] = l_right[r][c]
+    for r in range(rows - 1):
+        for c in range(half):
+            open_down[r][c] = l_down[r][c]
+            mc = cols - 1 - c
+            if 0 <= mc < cols:
+                open_down[r][mc] = l_down[r][c]
+    seam_c = half - 1
+    if seam_c < cols - 1:
+        for r in range(0, rows, max(2, rows // 5)):
+            open_right[r][seam_c] = True
+    return open_right, open_down
+
+
+def _bias_spiral(open_right, open_down, cols, rows, rng):
+    cx, cy = (cols - 1) / 2.0, (rows - 1) / 2.0
+    max_r = math.hypot(cx, cy) or 1.0
+    turns = rng.uniform(2.0, 3.0)
+    band = 0.07
+
+    def _on_band(x, y):
+        dx, dy = x - cx, y - cy
+        ang = (math.atan2(dy, dx) + math.pi) / (2 * math.pi)
+        rad = math.hypot(dx, dy) / max_r
+        spiral = (ang + rad * turns) % 1.0
+        return min(spiral, 1.0 - spiral) < band
+
+    for r in range(rows):
+        for c in range(cols - 1):
+            if _on_band(c + 1.0, r + 0.5):
+                open_right[r][c] = True
+    for r in range(rows - 1):
+        for c in range(cols):
+            if _on_band(c + 0.5, r + 1.0):
+                open_down[r][c] = True
+
+
+def _bias_radial(open_right, open_down, cols, rows, rng):
+    cx, cy = (cols - 1) / 2.0, (rows - 1) / 2.0
+    n_spokes = rng.randint(6, 9)
+    spoke_offset = rng.uniform(0, math.pi)
+    ring_gaps = sorted(rng.uniform(0.25, 0.9) for _ in range(2))
+    max_r = math.hypot(cx, cy) or 1.0
+
+    def _near_spoke(x, y):
+        ang = math.atan2(y - cy, x - cx) + spoke_offset
+        frac = (ang / (2 * math.pi / n_spokes)) % 1.0
+        return min(frac, 1.0 - frac) < 0.12
+
+    def _near_ring(x, y):
+        rad = math.hypot(x - cx, y - cy) / max_r
+        return any(abs(rad - g) < 0.05 for g in ring_gaps)
+
+    for r in range(rows):
+        for c in range(cols - 1):
+            x, y = c + 1.0, r + 0.5
+            if _near_spoke(x, y) or _near_ring(x, y):
+                open_right[r][c] = True
+    for r in range(rows - 1):
+        for c in range(cols):
+            x, y = c + 0.5, r + 1.0
+            if _near_spoke(x, y) or _near_ring(x, y):
+                open_down[r][c] = True
+
+
+def _bias_double_helix(open_right, open_down, cols, rows, rng):
+    amp = cols * 0.28
+    period = rows / rng.uniform(2.2, 3.4)
+    phase2 = math.pi
+    width = 0.85
+
+    def _near(x, r, phase):
+        center = cols / 2.0 + amp * math.sin(2 * math.pi * r / period + phase)
+        return abs(x - center) < width
+
+    for r in range(rows):
+        for c in range(cols - 1):
+            x = c + 1.0
+            if _near(x, r, 0.0) or _near(x, r, phase2):
+                open_right[r][c] = True
+    for r in range(rows - 1):
+        for c in range(cols):
+            x = c + 0.5
+            if _near(x, r, 0.0) or _near(x, r, phase2):
+                open_down[r][c] = True
+
+
+def _bias_spine_branches(open_right, open_down, cols, rows, rng):
+    spine_c = rng.randrange(cols)
+    for r in range(rows - 1):
+        open_down[r][spine_c] = True
+    r = 0
+    while r < rows:
+        side = rng.choice([-1, 1])
+        length = rng.randint(1, min(3, max(1, cols - 1)))
+        c = spine_c
+        for _ in range(length):
+            nc = c + side
+            if not (0 <= nc < cols):
+                break
+            if side > 0:
+                open_right[r][c] = True
+            else:
+                open_right[r][nc] = True
+            c = nc
+        r += rng.randint(1, 3)
+
+
+def _bias_terraces(open_right, open_down, cols, rows, rng):
+    for r in range(rows):
+        for c in range(cols - 1):
+            if rng.random() < 0.65:
+                open_right[r][c] = True
+    for r in range(rows - 1):
+        for c in range(cols):
+            if rng.random() < 0.16:
+                open_down[r][c] = True
+
+
+def _bias_scatter_pillars(open_right, open_down, cols, rows, rng):
+    for r in range(rows):
+        for c in range(cols - 1):
+            if rng.random() < 0.80:
+                open_right[r][c] = True
+    for r in range(rows - 1):
+        for c in range(cols):
+            if rng.random() < 0.80:
+                open_down[r][c] = True
+
+
+MAZE_STRUCTURE_KINDS = [
+    "classic", "sparse_labyrinth", "open_rooms", "spiral", "radial",
+    "double_helix", "spine_branches", "terraces", "scatter_pillars", "symmetric",
+]
+
+
+def pick_maze_structure(seed):
+    struct_rng = random.Random(hashlib.sha256((str(seed) + "structure").encode()).hexdigest())
+    return struct_rng.choice(MAZE_STRUCTURE_KINDS)
+
+
+def generate_structured_maze(kind, cols, rows, rng, n_racers=6):
+    """Returns (open_right, open_down) for the given MAZE_STRUCTURE_KINDS
+    entry. Every kind except "symmetric" starts from the same guaranteed-
+    connected spanning tree (generate_maze) and OR-merges in a kind-specific
+    extra-opening pattern on top — OR-ing can only ever ADD passages, so
+    full connectivity from any cell to the finish is preserved by
+    construction no matter how aggressive the pattern is. "symmetric" builds
+    its own provably-connected grid directly (see _maze_symmetric)."""
+    if kind == "symmetric":
+        return _maze_symmetric(cols, rows, rng)
+
+    open_right, open_down = generate_maze(cols, rows, rng)
+    room_scale = max(0, n_racers - 5)
+
+    if kind == "classic":
+        add_loops(open_right, open_down, cols, rows, rng, p=0.12)
+        carve_rooms(open_right, open_down, cols, rows, rng,
+                    room_count=max(2, (cols * rows) // 45) + room_scale)
+    elif kind == "sparse_labyrinth":
+        add_loops(open_right, open_down, cols, rows, rng, p=0.02)
+    elif kind == "open_rooms":
+        add_loops(open_right, open_down, cols, rows, rng, p=0.55)
+        carve_rooms(open_right, open_down, cols, rows, rng,
+                    room_count=max(4, (cols * rows) // 24) + room_scale, max_size=4)
+    elif kind == "spiral":
+        _bias_spiral(open_right, open_down, cols, rows, rng)
+    elif kind == "radial":
+        _bias_radial(open_right, open_down, cols, rows, rng)
+    elif kind == "double_helix":
+        _bias_double_helix(open_right, open_down, cols, rows, rng)
+    elif kind == "spine_branches":
+        _bias_spine_branches(open_right, open_down, cols, rows, rng)
+        add_loops(open_right, open_down, cols, rows, rng, p=0.05)
+    elif kind == "terraces":
+        _bias_terraces(open_right, open_down, cols, rows, rng)
+    elif kind == "scatter_pillars":
+        _bias_scatter_pillars(open_right, open_down, cols, rows, rng)
+
+    if room_scale > 0 and kind not in ("classic", "open_rooms"):
+        # Larger races (more racers) get a little extra room-carving on ANY
+        # structure so bunching near a chokepoint has somewhere to resolve
+        # instead of turning into an unreadable pileup.
+        carve_rooms(open_right, open_down, cols, rows, rng, room_count=room_scale)
+
+    return open_right, open_down
+
+
 def open_neighbors(r, c, open_right, open_down, cols, rows):
     out = []
     if c > 0 and open_right[r][c - 1]:
@@ -313,6 +532,20 @@ def build_wall_segments(geo, open_right, open_down, finish_col):
 def draw_maze_background(geo, open_right, open_down, finish_col, theme):
     w, h = int(geo.w), int(math.ceil(geo.img_h))
     img = Image.new("RGBA", (w, h), (*theme["floor"], 255))
+
+    # Subtle deterministic floor mottling (a coordinate-driven sine field,
+    # not real per-pixel noise, so it's cheap and needs no extra seed
+    # threading) — a perfectly flat single-color fill reads as an obviously
+    # placeholder/generated backdrop; this gives the floor a faint sense of
+    # material instead, without touching any per-theme color values.
+    floor_np = np.array(img, dtype=np.float32)
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+    mottle = (np.sin(xx * 0.045) * np.sin(yy * 0.045 + 1.3) +
+              np.sin(xx * 0.011 + 2.0) * np.sin(yy * 0.017))
+    mottle = (mottle * 6.0)[:, :, None]
+    floor_np[:, :, :3] = np.clip(floor_np[:, :, :3] + mottle, 0, 255)
+    img = Image.fromarray(floor_np.astype(np.uint8), mode="RGBA")
+
     d = ImageDraw.Draw(img, "RGBA")
 
     left = geo.border_w
@@ -368,17 +601,22 @@ def draw_maze_background(geo, open_right, open_down, finish_col, theme):
     wt = geo.wall_thickness
     wall_color = theme["wall"]
     bevel = tuple(min(255, c + 45) for c in wall_color)
+    shade = tuple(max(0, c - 40) for c in wall_color)
     for (p1, p2) in build_wall_segments(geo, open_right, open_down, finish_col):
         d.line([p1, p2], fill=(*wall_color, 255), width=int(wt))
         d.ellipse([p1[0] - wt / 2, p1[1] - wt / 2, p1[0] + wt / 2, p1[1] + wt / 2], fill=(*wall_color, 255))
         d.ellipse([p2[0] - wt / 2, p2[1] - wt / 2, p2[0] + wt / 2, p2[1] + wt / 2], fill=(*wall_color, 255))
-        # thin bevel highlight along the wall's top-left face
         bx, by = p2[0] - p1[0], p2[1] - p1[1]
         length = math.hypot(bx, by) or 1.0
         nx, ny = -by / length, bx / length
         off = wt * 0.28
+        # bevel highlight (top-left face) + a matching darker shade line on
+        # the opposite face, so a wall reads as a slightly raised/rounded
+        # edge instead of one flat-shaded rectangle.
         d.line([(p1[0] + nx * off, p1[1] + ny * off), (p2[0] + nx * off, p2[1] + ny * off)],
                fill=(*bevel, 140), width=max(1, int(wt * 0.18)))
+        d.line([(p1[0] - nx * off, p1[1] - ny * off), (p2[0] - nx * off, p2[1] - ny * off)],
+               fill=(*shade, 130), width=max(1, int(wt * 0.18)))
 
     return img
 
@@ -403,7 +641,7 @@ def make_racer_icon(color, size=90):
     icon is rotated per-frame to face the racer's current travel direction,
     the same way weapon-ball rotates its weapon icons by body.angle."""
     img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
+    d = ImageDraw.Draw(img, "RGBA")
     cx = size / 2
     pad = size * 0.14
     body_top, body_bottom = pad * 1.4, size - pad
@@ -425,9 +663,14 @@ def make_racer_icon(color, size=90):
     # diagonal sheen
     d.polygon([(body_left, body_top), (body_right * 0.6, body_top), (body_left, body_bottom * 0.5)],
               fill=(*light, 110))
-    # front pennant nub
-    d.polygon([(cx - size * 0.10, body_top), (cx + size * 0.10, body_top), (cx, pad * 0.15)], fill=(*color, 255),
-              outline=(*dark, 255))
+    # front direction nub — a solid tint of the racer's OWN color (not a
+    # fixed tone unrelated to it, which is what made this read as a muddy
+    # gray/olive scrap clashing with the body) plus a crisp opaque outline,
+    # drawn on the explicit "RGBA" draw context above so it composites fully
+    # opaque instead of blending translucently with whatever's beneath it.
+    nub_fill = tuple(min(255, c + 70) for c in color)
+    d.polygon([(cx - size * 0.11, body_top + size * 0.01), (cx + size * 0.11, body_top + size * 0.01),
+               (cx, pad * 0.05)], fill=(*nub_fill, 255), outline=(*dark, 255), width=max(1, int(size * 0.02)))
     # eyes
     eye_y = body_top + (body_bottom - body_top) * 0.38
     for dx in (-0.16, 0.16):
@@ -447,6 +690,13 @@ def make_racer_icon(color, size=90):
 
 PHYSICS_HZ = 120
 INTRO_SECONDS = 2.0
+# A quick punched-in, flash-cut freeze on a racer closing in on the finish
+# line — prepended before the countdown even starts, same idea as weapon-
+# ball-bot's COLD_OPEN_SECONDS. Deliberately shows no "FINISHED!"/winner
+# text (see build_cold_open_clip's src-frame choice) so it teases the
+# payoff without spoiling who wins — a first-impression hook for a viewer
+# scrolling past in a muted autoplay feed.
+COLD_OPEN_SECONDS = 0.8
 COLS = 6
 ROWS = 26
 # Target on-screen corridor cell size in pixels, used to pick a column count
@@ -478,13 +728,15 @@ def simulate_race(w, h, seed, fps=24, max_seconds=28, min_seconds=13, n_racers=N
 
     border_w_est = w * 0.045
     cols = cols if cols is not None else max(4, round((w - 2 * border_w_est) / TARGET_CELL_PX))
-    rows = rows if rows is not None else ROWS
+    # Slightly shorter maze for a small pack (quicker to watch, less empty
+    # travel time with few racers on screen), slightly taller for a big pack
+    # (more room to spread out before things get chaotic near the finish).
+    rows = rows if rows is not None else max(16, min(34, ROWS + (n_racers - 6) * 2))
 
     geo = MazeGeometry(w, cols, rows)
     maze_rng = random.Random(hashlib.sha256((str(seed) + "maze").encode()).hexdigest())
-    open_right, open_down = generate_maze(cols, rows, maze_rng)
-    add_loops(open_right, open_down, cols, rows, maze_rng, p=0.13)
-    carve_rooms(open_right, open_down, cols, rows, maze_rng)
+    structure_kind = pick_maze_structure(seed)
+    open_right, open_down = generate_structured_maze(structure_kind, cols, rows, maze_rng, n_racers)
     finish_col = maze_rng.randrange(cols)
     finish_cell = (rows - 1, finish_col)
     dist_field = bfs_distance_field(open_right, open_down, cols, rows, finish_cell)
@@ -561,13 +813,17 @@ def simulate_race(w, h, seed, fps=24, max_seconds=28, min_seconds=13, n_racers=N
     stuck_counters = [0] * n_racers
 
     def _recompute_target(i):
+        """Returns True when this call landed on a real fork (more than one
+        open neighbor) — the caller uses that to trigger a brief steering
+        hesitation, so a racer visibly 'thinks' for an instant at a genuine
+        decision point instead of snapping onto its new line immediately."""
         r, c = last_cell[i]
         if (r, c) == finish_cell:
             target[i] = (fzx, fzy)
-            return
+            return False
         candidates = open_neighbors(r, c, open_right, open_down, cols, rows)
         if not candidates:
-            return
+            return False
         best = min(dist_field[nr][nc] for (nr, nc) in candidates)
         best_candidates = [n for n in candidates if dist_field[n[0]][n[1]] == best]
         prng = per_racer_rng[i]
@@ -576,6 +832,7 @@ def simulate_race(w, h, seed, fps=24, max_seconds=28, min_seconds=13, n_racers=N
         else:
             choice = best_candidates[prng.randrange(len(best_candidates))]
         target[i] = geo.cell_center(*choice)
+        return len(candidates) > 1
 
     def on_begin(arbiter, space_, data):
         ct1, ct2 = arbiter.shapes[0].collision_type, arbiter.shapes[1].collision_type
@@ -647,6 +904,27 @@ def simulate_race(w, h, seed, fps=24, max_seconds=28, min_seconds=13, n_racers=N
     SLOWDOWN_RADIUS = geo.cell * 0.55
     JITTER_HZ_SCALE = 3.0
 
+    # Per-racer handling texture from the roster's "weight" stat (0.88-1.12):
+    # a lighter racer tops out faster but turns/redirects a touch more
+    # eagerly (twitchier), a heavier one is a bit slower outright but holds
+    # its line more (already shoves harder / gets shoved less via its real
+    # pymunk mass in collisions) — without this every racer had IDENTICAL
+    # top speed and steering response and "weight" only affected collision
+    # physics, which read as one script with a random-detour dice roll
+    # rather than genuinely independent racers.
+    speed_mult = [1.0 + (1.0 - racers[i]["weight"]) * 0.6 for i in range(n_racers)]
+    steer_mult = [1.0 - (racers[i]["weight"] - 1.0) * 0.5 for i in range(n_racers)]
+
+    # Junction hesitation: reuses the same steering-dampening ramp as the
+    # post-bump recovery window (recovery_until/RECOVERY_STEPS), just
+    # triggered by a genuine fork-in-the-road decision instead of a
+    # collision, and for a shorter stretch (JUNCTION_HESITATE_STEPS <
+    # RECOVERY_STEPS means the ramp starts already partway recovered — a
+    # brief waver, not a full stop) — a racer visibly "thinks" for an
+    # instant at a real junction instead of snapping onto its new line
+    # immediately, which is what made movement read as scripted.
+    JUNCTION_HESITATE_STEPS = int(0.15 * PHYSICS_HZ)
+
     frames = []
     finish_frame_flags = {}  # frame_idx -> [(racer_idx, x, y), ...]
     bump_frame_flags = {}  # frame_idx -> (x, y, intensity, kind)
@@ -665,7 +943,9 @@ def simulate_race(w, h, seed, fps=24, max_seconds=28, min_seconds=13, n_racers=N
             r = min(r, rows - 1)
             if (r, c) != last_cell[i] and y < geo.top_border + rows * geo.cell:
                 last_cell[i] = (r, c)
-                _recompute_target(i)
+                if _recompute_target(i):
+                    until = step_counter["n"] + JUNCTION_HESITATE_STEPS
+                    recovery_until[i] = max(recovery_until[i], until)
             elif last_cell[i] == finish_cell:
                 target[i] = (fzx, fzy)
 
@@ -673,10 +953,10 @@ def simulate_race(w, h, seed, fps=24, max_seconds=28, min_seconds=13, n_racers=N
             dx, dy = tx - x, ty - y
             dist = math.hypot(dx, dy) or 1.0
             speed_scale = min(1.0, max(0.35, dist / SLOWDOWN_RADIUS))
-            desired_vx = dx / dist * MAX_SPEED * speed_scale
-            desired_vy = dy / dist * MAX_SPEED * speed_scale
+            desired_vx = dx / dist * MAX_SPEED * speed_mult[i] * speed_scale
+            desired_vy = dy / dist * MAX_SPEED * speed_mult[i] * speed_scale
             vx, vy = bodies[i].velocity
-            steer_gain = STEER_GAIN
+            steer_gain = STEER_GAIN * steer_mult[i]
             if step_counter["n"] < recovery_until[i]:
                 # Ramp from RECOVERY_MIN_STEER_MULT back up to full strength
                 # over the recovery window instead of snapping instantly, so
@@ -952,6 +1232,28 @@ def build_race_clip(race):
                    stroke_width=5, stroke_fill=(0, 0, 0, wa))
 
         arr = np.array(img.convert("RGB"))
+
+        if not in_intro:
+            # A few px of camera shake right after a hard racer-vs-racer
+            # bump sells the impact (a collision that only moves an icon a
+            # few pixels can otherwise read as barely happening); wall bumps
+            # and soft grazes stay shake-free so it doesn't fire constantly.
+            shake_dx = shake_dy = 0.0
+            for fi in range(max(0, idx - 3), idx + 1):
+                flag = race["bump_frame_flags"].get(fi)
+                if not flag:
+                    continue
+                _, _, intensity, kind = flag
+                if kind != "racer" or intensity < 0.45:
+                    continue
+                age = idx - fi
+                amt = intensity * max(0.0, 1 - age / 3.0) * 5.0
+                jr = _det_jitter(fi)
+                shake_dx += math.cos(jr * 6.283) * amt
+                shake_dy += math.sin(jr * 6.283) * amt
+            if shake_dx or shake_dy:
+                arr = np.roll(arr, (int(round(shake_dy)), int(round(shake_dx))), axis=(0, 1))
+
         return arr
 
     duration = INTRO_SECONDS + n_frames / fps
@@ -960,9 +1262,125 @@ def build_race_clip(race):
     return clip
 
 
+def build_cold_open_clip(race, seconds=COLD_OPEN_SECONDS):
+    """Standalone short (silent) VideoClip: a punched-in zoom + white flash
+    + fade-to-black tease of the winner closing in on the finish line, no
+    HUD/countdown/labels/win-banner. Renders directly from `race`'s own data
+    (independent of build_race_clip's per-call camera-smoothing state) so it
+    can be prepended anywhere in a larger timeline — right before a Short's
+    own countdown, or way ahead of a tournament's final heat.
+
+    Source frame: a few frames BEFORE the winner's actual finish-line
+    crossing (not the crossing itself), so the "{name} FINISHED!" pop-up
+    label — which build_race_clip renders starting exactly at the finish
+    frame — is guaranteed not to be on screen yet. That's what keeps this a
+    tease instead of a spoiler."""
+    from moviepy import VideoClip
+
+    w, h, fps = race["w"], race["h"], race["fps"]
+    frames = race["frames"]
+    racers = race["racers"]
+    n = race["n_racers"]
+    geo = race["geo"]
+    theme = race["theme"]
+    maze_img = race["maze_img"].convert("RGBA")
+    maze_img_h = maze_img.height
+
+    winner_idx = race["winner_idx"]
+    finish_fi = None
+    for fi, events in race["finish_frame_flags"].items():
+        if any(ridx == winner_idx for (ridx, _, _) in events):
+            finish_fi = fi
+            break
+    if finish_fi is None:
+        finish_fi = len(frames) - 1
+    src_idx = max(0, finish_fi - 15)
+
+    HUD_MARGIN = int(h * 0.13)
+    viewport_h = h - HUD_MARGIN
+    ICON_SIZE = int(geo.racer_radius * 2.6)
+    icons = [make_racer_icon(r["color"], ICON_SIZE) for r in racers]
+
+    # Replay the exact camera EMA build_race_clip uses, up through src_idx
+    # only, so this teaser frames the shot the same way the live race would
+    # have at that point instead of guessing a static crop.
+    CAMERA_SMOOTH = 0.06
+    LEAD_FRAC = 0.36
+    cam_top = None
+    for i in range(src_idx + 1):
+        alive_y = [p[1] for p in frames[i]["pos"] if p is not None]
+        lead_y = max(alive_y) if alive_y else maze_img_h * 0.5
+        cam_top = lead_y if cam_top is None else cam_top + CAMERA_SMOOTH * (lead_y - cam_top)
+    top = (cam_top - viewport_h * LEAD_FRAC) if cam_top is not None else 0.0
+    top = max(0.0, min(top, max(0.0, maze_img_h - viewport_h)))
+
+    base_img = Image.new("RGBA", (w, h), (*theme["floor"], 255))
+    crop_top = int(top)
+    crop_bottom = min(maze_img_h, crop_top + viewport_h)
+    maze_slice = maze_img.crop((0, crop_top, w, crop_bottom))
+    base_img.paste(maze_slice, (0, HUD_MARGIN))
+    st = frames[src_idx]
+    for i in range(n):
+        pos = st["pos"][i]
+        if pos is None:
+            continue
+        x, y, ang = pos
+        ry = y - crop_top + HUD_MARGIN
+        icon = icons[i].rotate(-ang, resample=Image.BICUBIC)
+        base_img.alpha_composite(icon, (int(x - icon.width / 2), int(ry - icon.height / 2)))
+    base_arr = np.array(base_img.convert("RGB")).astype(np.float32)
+
+    def make_frame(t):
+        zoom = 1.05 + 0.15 * (t / seconds)
+        zw, zh = max(1, int(w / zoom)), max(1, int(h / zoom))
+        zx0, zy0 = (w - zw) // 2, (h - zh) // 2
+        zimg = (Image.fromarray(base_arr.astype(np.uint8))
+                .crop((zx0, zy0, zx0 + zw, zy0 + zh)).resize((w, h), Image.BICUBIC))
+        arr = np.array(zimg).astype(np.float32)
+        if t < 0.15:
+            flash_amt = (1.0 - t / 0.15) ** 1.5
+            arr = arr + (255 - arr) * flash_amt * 0.85
+        fade_start = seconds - 0.12
+        if t > fade_start:
+            arr = arr * (1 - (t - fade_start) / 0.12)
+        return np.clip(arr, 0, 255).astype(np.uint8)
+
+    clip = VideoClip(make_frame, duration=seconds)
+    clip.fps = fps
+    return clip
+
+
 # --- Sound synthesis --------------------------------------------------
 
 SR = 44100
+
+
+def _hook_sting():
+    """A short punchy sting for the cold-open flash — a low thump plus a
+    quick rising sweep, distinct from every in-race sound so the very first
+    thing a viewer hears reads as 'something is about to happen'."""
+    dur = 0.35
+    n = int(SR * dur)
+    t = np.linspace(0, dur, n, endpoint=False)
+    thump = np.sin(2 * np.pi * 85 * t) * np.exp(-t * 12) * 0.8
+    sweep_freq = 300 + 900 * np.clip(t / 0.18, 0, 1)
+    sweep = np.sin(2 * np.pi * sweep_freq * t) * np.exp(-t * 7) * 0.5
+    noise = np.random.default_rng(7).uniform(-1, 1, n) * np.exp(-t * 40) * 0.25
+    return np.tanh(thump + sweep + noise).astype(np.float32)
+
+
+def build_cold_open_sfx(seconds=COLD_OPEN_SECONDS):
+    """Stereo float32 array matching build_cold_open_clip's exact duration —
+    the sting lands right on the flash at t=0."""
+    n_samples = int(seconds * SR)
+    buf = np.zeros(n_samples, dtype=np.float32)
+    sting = _hook_sting()
+    end = min(n_samples, len(sting))
+    if end > 0:
+        buf[:end] += sting[:end]
+    peak = np.max(np.abs(buf)) or 1.0
+    buf = (buf / peak) * 0.85
+    return np.stack([buf, buf], axis=1)
 
 
 def _bump_sound(intensity, kind="wall"):

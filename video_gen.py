@@ -7,7 +7,7 @@ import googleapiclient.discovery
 import googleapiclient.http
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
-from moviepy import AudioFileClip, AudioArrayClip, CompositeAudioClip
+from moviepy import AudioFileClip, AudioArrayClip, CompositeAudioClip, concatenate_videoclips, concatenate_audioclips
 import sys
 import io
 import json
@@ -22,6 +22,7 @@ import numpy as np
 from race_sim import (
     simulate_race, build_race_clip, build_sfx_array, generate_thumbnail,
     build_duck_envelope, race_bump_times, SR as SFX_SR, RACER_POOL,
+    build_cold_open_clip, build_cold_open_sfx, COLD_OPEN_SECONDS,
 )
 
 # UTF-8 кодтеуін орнату консоль үшін
@@ -466,6 +467,7 @@ def generate_video(skip_upload: bool = False, n_racers: int = None):
             thumbnail_path = None
 
         race_clip = None
+        cold_open_clip = None
         music_clip = None
         sfx_clip = None
         final_video = None
@@ -505,10 +507,18 @@ def generate_video(skip_upload: bool = False, n_racers: int = None):
                 logger.warning("⚠️ Фон музыкасы табылмады, тек SFX қолданылады")
 
             final_audio = CompositeAudioClip(audio_tracks)
-            final_video = race_clip.with_audio(final_audio)
+            main_video = race_clip.with_audio(final_audio)
+
+            cold_open_clip = build_cold_open_clip(race)
+            cold_open_audio_arr = build_cold_open_sfx(cold_open_clip.duration)
+            cold_open_audio = AudioArrayClip(cold_open_audio_arr, fps=SFX_SR).subclipped(0, cold_open_clip.duration)
+            cold_open_clip = cold_open_clip.with_audio(cold_open_audio)
+
+            final_video = concatenate_videoclips([cold_open_clip, main_video])
 
             final_output = os.path.join(base_dir, "final_shorts.mp4")
-            logger.info(f"\n⏳ Видео құрылуда ({VIDEO_CODEC}, {VIDEO_FPS}fps, {duration:.1f}с)...")
+            total_duration = duration + cold_open_clip.duration
+            logger.info(f"\n⏳ Видео құрылуда ({VIDEO_CODEC}, {VIDEO_FPS}fps, {total_duration:.1f}с)...")
 
             try:
                 final_video.write_videofile(
@@ -548,6 +558,8 @@ def generate_video(skip_upload: bool = False, n_racers: int = None):
             try:
                 if race_clip:
                     race_clip.close()
+                if cold_open_clip:
+                    cold_open_clip.close()
                 if music_clip:
                     music_clip.close()
                 if sfx_clip:

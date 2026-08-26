@@ -28,6 +28,7 @@ from dotenv import load_dotenv
 from race_sim import (
     simulate_race, build_race_clip, build_sfx_array, make_racer_icon, get_font,
     pick_theme, build_duck_envelope, race_bump_times, RACER_POOL, SR as SFX_SR,
+    build_cold_open_clip, build_cold_open_sfx,
 )
 from video_gen import (
     base_dir, send_telegram, retry_with_backoff, ensure_directories_exist,
@@ -360,6 +361,21 @@ def generate_tournament_video(skip_upload: bool = False):
         bracket["final"] = {"racers": final_group, "advancing_idx": [champion_idx]}
         bracket["champion"] = champion
         logger.info(f"🏆 Чемпион: {champion['name']}")
+
+        # A single cold-open teaser at the very front of the WHOLE video
+        # (not one per heat, that would be excessive over 10-15 minutes) —
+        # built from the Final heat's own race data, now that it's known,
+        # then spliced onto the front of the already-recorded `clips` list.
+        # global_bump_times entries recorded so far are offsets into a
+        # timeline that didn't yet include this teaser, so they need
+        # shifting by its duration once it's prepended.
+        cold_open_clip = build_cold_open_clip(race)
+        cold_open_audio_arr = build_cold_open_sfx(cold_open_clip.duration)
+        cold_open_audio = AudioArrayClip(cold_open_audio_arr, fps=SFX_SR).subclipped(0, cold_open_clip.duration)
+        cold_open_clip = cold_open_clip.with_audio(cold_open_audio)
+        clips.insert(0, cold_open_clip)
+        global_bump_times = [t + cold_open_clip.duration for t in global_bump_times]
+        cumulative_time += cold_open_clip.duration
 
         _append(_static_clip(render_bracket_board(bracket, theme, f"Champion: {champion['name']}!"),
                               CHAMPION_HOLD_SECONDS))
