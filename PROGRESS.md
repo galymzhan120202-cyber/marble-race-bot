@@ -44,6 +44,9 @@ file is the durable record.
       `MBALL_TELEGRAM_NOTIFY_TOKEN`, `MBALL_TELEGRAM_NOTIFY_CHAT_ID`,
       `MBALL_CLIENT_SECRETS_JSON`, `MBALL_YOUTUBE_TOKEN_JSON`.
 
+- [x] Code pushed to GitHub: https://github.com/galymzhan120202-cyber/marble-race-bot
+      (main branch, initial commit `c18bb9e`, no secrets included).
+
 ## Still to do
 
 - [ ] Do a real (confirmed, explicit) first upload test — either manually
