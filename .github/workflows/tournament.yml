@@ -37,17 +37,17 @@ jobs:
 
       - name: YouTube деректерін қалпына келтіру
         env:
-          MRACE_CLIENT_SECRETS_JSON: ${{ secrets.MRACE_CLIENT_SECRETS_JSON }}
-          MRACE_YOUTUBE_TOKEN_JSON: ${{ secrets.MRACE_YOUTUBE_TOKEN_JSON }}
+          MBALL_CLIENT_SECRETS_JSON: ${{ secrets.MBALL_CLIENT_SECRETS_JSON }}
+          MBALL_YOUTUBE_TOKEN_JSON: ${{ secrets.MBALL_YOUTUBE_TOKEN_JSON }}
         run: |
-          echo "$MRACE_CLIENT_SECRETS_JSON" > client_secrets.json
-          echo "$MRACE_YOUTUBE_TOKEN_JSON" > youtube_token.json
+          echo "$MBALL_CLIENT_SECRETS_JSON" > client_secrets.json
+          echo "$MBALL_YOUTUBE_TOKEN_JSON" > youtube_token.json
 
       - name: .env файлын құру
         run: |
           cat > .env << 'EOF'
-          TELEGRAM_NOTIFY_TOKEN=${{ secrets.MRACE_TELEGRAM_NOTIFY_TOKEN }}
-          TELEGRAM_NOTIFY_CHAT_ID=${{ secrets.MRACE_TELEGRAM_NOTIFY_CHAT_ID }}
+          TELEGRAM_NOTIFY_TOKEN=${{ secrets.MBALL_TELEGRAM_NOTIFY_TOKEN }}
+          TELEGRAM_NOTIFY_CHAT_ID=${{ secrets.MBALL_TELEGRAM_NOTIFY_CHAT_ID }}
           MUSIC_VOLUME=0.15
           SFX_VOLUME=0.9
           YOUTUBE_CATEGORY_ID=20
