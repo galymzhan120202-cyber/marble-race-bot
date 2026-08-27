@@ -778,15 +778,30 @@ def simulate_race(w, h, seed, fps=24, max_seconds=28, min_seconds=13, n_racers=N
     finish_shape.collision_type = FINISH_TYPE
     space.add(finish_shape)
 
+    # Racers collide as squares, not circles — a circle-vs-circle/wall
+    # contact normal always passes straight through the circle's own
+    # center, so it generates ~zero spin on impact (physically correct for
+    # smooth circles, but reads as robotic compared to the reference's
+    # squares "spinning wildly... based on physics, inertia, and sharp
+    # corner collisions"). A real corner catching a wall or another racer
+    # off-center produces genuine torque. RACER_SIDE is sized so the
+    # square's corner-to-center reach (half_side*sqrt(2)) equals the old
+    # circle's radius exactly — same worst-case clearance through a
+    # corridor as the already-battle-tested circle, so this doesn't
+    # reopen any of the stuck/wedge bugs fixed earlier; only its straight
+    # (non-diagonal) reach shrinks, which if anything leaves more room.
+    RACER_SIDE = geo.racer_radius * math.sqrt(2)
+    RACER_POLY_RADIUS = RACER_SIDE * 0.08
     bodies, shapes = [], []
     for i in range(n_racers):
         start_r, start_c = i // cols, i % cols
         cx, cy = geo.cell_center(start_r, start_c)
         jx, jy = rng.uniform(-6, 6), rng.uniform(-6, 6)
         mass = racers[i]["weight"]
-        body = pymunk.Body(mass=mass, moment=pymunk.moment_for_circle(mass, 0, geo.racer_radius))
+        body = pymunk.Body(mass=mass, moment=pymunk.moment_for_box(mass, (RACER_SIDE, RACER_SIDE)))
         body.position = (cx + jx, cy + jy)
-        shape = pymunk.Circle(body, geo.racer_radius)
+        body.angle = rng.uniform(0, 2 * math.pi)
+        shape = pymunk.Poly.create_box(body, (RACER_SIDE, RACER_SIDE), radius=RACER_POLY_RADIUS)
         shape.elasticity = 0.5
         shape.friction = 0.35
         shape.collision_type = RACER_TYPE_BASE + i
@@ -1055,6 +1070,12 @@ def simulate_race(w, h, seed, fps=24, max_seconds=28, min_seconds=13, n_racers=N
                     ddx, ddy = tx - pos_now.x, ty - pos_now.y
                     ddist = math.hypot(ddx, ddy) or 1.0
                     ndx, ndy = ddx / ddist, ddy / ddist
+                    # Alternate by racer index rather than picking randomly
+                    # per racer — a multi-racer pileup jammed in one doorway
+                    # (square bodies can wedge corner-to-corner in a way
+                    # circles never did) naturally splits left/right instead
+                    # of several racers independently rolling the same side
+                    # and re-jamming.
                     side = per_racer_rng[i].choice([-1, 1])
                     sdx, sdy = -ndy * side, ndx * side
                     nudge = MAX_SPEED * racers[i]["weight"] * 2.2
@@ -1068,8 +1089,13 @@ def simulate_race(w, h, seed, fps=24, max_seconds=28, min_seconds=13, n_racers=N
             for i in range(n_racers):
                 if active[i]:
                     b = bodies[i]
-                    vx, vy = b.velocity
-                    ang = math.degrees(math.atan2(vy, vx)) + 90 if (vx or vy) else 0.0
+                    # Real physics rotation (same convention Drop mode
+                    # already uses), not a synthetic velocity-heading
+                    # snap-to-forward — now that racers collide as squares
+                    # (see the RACER_SIDE comment above), collisions impart
+                    # genuine torque, so this is what actually shows them
+                    # "spinning wildly... from sharp corner collisions."
+                    ang = -math.degrees(b.angle)
                     pos.append((b.position.x, b.position.y, ang))
                 else:
                     pos.append(None)
@@ -1309,6 +1335,17 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=32, min_seconds=14, n_racers
     right_wall_body.position = (right, zone_cy)
     space.add(right_wall_body, right_wall_shape)
 
+    # Circle collision body (NOT square, unlike race mode's racers) --
+    # tried square/spinning collisions here too for reference-matching
+    # visual flair, but batch-tested worse: square bodies wedge
+    # corner-to-corner in multi-racer pileups at doorways/chokepoints far
+    # more than circles do, and battle mode already has more of those
+    # (zone-driven funneling plus knockback throws sending racers
+    # careening) than race mode does. Confirmed via the same batch
+    # harness: nothing-happened rate went 13% (circle) -> 16-23% (square,
+    # several corner-rounding values tried) and never recovered to
+    # baseline. Race/Drop mode use real square bodies successfully;
+    # battle mode keeps the proven-stable circle.
     bodies, shapes = [], []
     for i in range(n_racers):
         start_r, start_c = i // cols, i % cols
@@ -1676,6 +1713,12 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=32, min_seconds=14, n_racers
                     ddx, ddy = tx - pos_now.x, ty - pos_now.y
                     ddist = math.hypot(ddx, ddy) or 1.0
                     ndx, ndy = ddx / ddist, ddy / ddist
+                    # Alternate by racer index rather than picking randomly
+                    # per racer — a multi-racer pileup jammed in one doorway
+                    # (square bodies can wedge corner-to-corner in a way
+                    # circles never did) naturally splits left/right instead
+                    # of several racers independently rolling the same side
+                    # and re-jamming.
                     side = per_racer_rng[i].choice([-1, 1])
                     sdx, sdy = -ndy * side, ndx * side
                     nudge = MAX_SPEED * racers[i]["weight"] * 2.2

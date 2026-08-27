@@ -216,6 +216,42 @@ fine on its own, but rendering it exposed a real, viewer-visible bug:
       video and clip off both edges — a latent risk for long racer names
       + the existing templates too, not just the new ones.
 
+## Physics/collision fidelity pass vs reference (2026-08-27)
+
+User asked to "truly copy" Square Race: Color Clash's physics/collision
+behavior (not just visual style), specifically calling out collisions.
+Investigated further via YouTube thumbnail frames of a related "Square
+League" video — turned out to be a different, messier format (100+ tiny
+pieces, tournament roster tables) not close to our clean few-racer
+style, so not useful as a literal template. Fell back to the earlier,
+already-verified App Store description: races are decided by "physics,
+inertia, and sharp corner collisions" with racers "spinning wildly."
+
+- [x] **Race mode racers now collide as squares, not circles**, and
+      render using **real physics rotation** (`body.angle`) instead of a
+      synthetic velocity-heading snap. A circle's collision normal always
+      passes through its own center, so it generates ~zero spin on
+      impact — physically correct for smooth circles, but is why racers
+      never visibly tumbled before. `RACER_SIDE` is sized so the square's
+      corner-to-center reach exactly equals the old circle's radius
+      (same worst-case corridor clearance as the already-battle-tested
+      circle — confirmed via the full batch harness: 700 sims across all
+      `n_racers` 2-8, 0 regressions, same 2.3% "ran out of time" rate as
+      before). Small poly corner-rounding (8% of side) keeps it from
+      being razor-sharp.
+- [x] **Battle mode intentionally kept its circle collision body** — tried
+      the identical square-body change there too, but it made things
+      measurably worse (batch "nothing happened" rate: 13% baseline ->
+      16-23% across several corner-rounding values tried, never
+      recovering). Root cause: square bodies wedge corner-to-corner in
+      multi-racer pileups far more than circles do, and battle mode
+      already has more pileup pressure than race mode (the closing zone
+      funnels racers together, and knockback throws send them careening
+      into chokepoints). Reverted battle mode's racers to circles +
+      velocity-heading rendering, its already-proven-stable config from
+      the earlier bug-hunting pass. Drop mode already used real square
+      bodies/physics rotation from the start and was unaffected.
+
 ## Still to do
 
 - [ ] Do a real (confirmed, explicit) first upload test — either manually
