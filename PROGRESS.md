@@ -187,6 +187,35 @@ and fixed three real bugs, in the order the batch runs surfaced them:
       (racers still visibly progressing throughout, just don't quite
       make it before the time cap) rather than dead/frozen simulations.
 
+## Second audit pass: presentation contradiction bug (2026-08-27)
+
+Re-ran the batch audit at larger scale (700 race sims across all 7
+`n_racers` values 2-8, 100 seeds each) after the first pass. Found the
+remaining ~2.3% of "no finish" cases are **not** stuck/frozen simulations
+— positions keep changing right up to the time cap (a longer maze for
+more racers can occasionally just need more than `max_seconds`). That's
+fine on its own, but rendering it exposed a real, viewer-visible bug:
+
+- [x] **Win banner contradicted the HUD counter**: when nobody actually
+      crosses the finish, `winner_idx`/`winner_name` still get set (via
+      the existing furthest-progress fallback), but the video kept using
+      the normal `WIN_TEXT_TEMPLATES` ("{name} CROSSES FIRST!") regardless
+      — so a video could show "FINISHED: 0/6" in the HUD at the exact
+      same moment a banner declares that racer the winner "crossing
+      first." Same bug existed in Drop mode's finish-line fallback too.
+      Fix: `simulate_race`/`simulate_drop`/`simulate_battle` all now
+      return a `winner_finished` flag; `build_race_clip`/`build_drop_clip`
+      use it to pick `TIMEOUT_WIN_TEXT_TEMPLATES` ("TIME'S UP! {name}
+      LEADS!") instead of the crossing-line phrasing when nobody actually
+      finished. (Battle mode already had this distinction from the
+      previous session's `winner_finished`/`BATTLE_WIN_TEXT_TEMPLATES`
+      split.)
+- [x] Also added `_fit_text_font` (shrinks the win-banner font until the
+      formatted text fits within the frame width) after noticing the
+      longer timeout templates could otherwise render wider than the
+      video and clip off both edges — a latent risk for long racer names
+      + the existing templates too, not just the new ones.
+
 ## Still to do
 
 - [ ] Do a real (confirmed, explicit) first upload test — either manually

@@ -1122,6 +1122,7 @@ def simulate_race(w, h, seed, fps=24, max_seconds=28, min_seconds=13, n_racers=N
         "n_racers": n_racers,
         "winner_idx": winner_idx[0],
         "winner_name": racers[winner_idx[0]]["name"],
+        "winner_finished": winner_idx[0] in finished_order_list,
         "finish_order": finished_order_list,
         "n_finished_total": len(finish_log),
         "full_ranking": full_ranking,
@@ -2047,6 +2048,7 @@ def simulate_drop(w, h, seed, fps=24, max_seconds=22, min_seconds=8, n_racers=No
         "n_racers": n_racers,
         "winner_idx": winner_idx,
         "winner_name": racers[winner_idx]["name"],
+        "winner_finished": winner_idx in finished_order_list,
         "full_ranking": full_ranking,
         "pegs": pegs,
         "peg_radius": peg_radius,
@@ -2115,7 +2117,10 @@ def build_drop_clip(race):
     finish_pop_font = get_font(int(h * 0.020))
 
     title_text = f"{n}-Way Marble Drop"
-    win_text_template = _pick_variant(race["seed"], "wintext", WIN_TEXT_TEMPLATES)
+    win_text_template = (_pick_variant(race["seed"], "wintext", WIN_TEXT_TEMPLATES) if race["winner_finished"]
+                          else _pick_variant(race["seed"], "timeoutwintext", TIMEOUT_WIN_TEXT_TEMPLATES))
+    win_text = win_text_template.format(name=race["winner_name"])
+    win_font = _fit_text_font(win_text, win_font, w * 0.94)
     go_word = _pick_variant(race["seed"], "goword", FIGHT_WORD_TEMPLATES)
 
     ambient_particles = _make_ambient_particles(race["seed"], 14, w, h)
@@ -2257,6 +2262,12 @@ def build_drop_clip(race):
 # --- Wording variety --------------------------------------------------
 
 WIN_TEXT_TEMPLATES = ["{name} WINS!", "{name} TAKES THE MAZE!", "{name} FINDS THE WAY!", "{name} CROSSES FIRST!"]
+# Used instead of WIN_TEXT_TEMPLATES when time simply runs out with nobody
+# having actually crossed the finish line (can happen with a longer maze/
+# more racers) — the normal templates all assert a finish-line crossing
+# that didn't happen, which read as a broken/contradictory video next to
+# a "FINISHED: 0/N" counter still showing zero.
+TIMEOUT_WIN_TEXT_TEMPLATES = ["{name} LEADS AT TIME-OUT!", "TIME'S UP! {name} LEADS!", "{name} GOES FARTHEST!"]
 BATTLE_WIN_TEXT_TEMPLATES = ["{name} SURVIVES!", "{name} IS LAST STANDING!", "{name} WINS THE ARENA!", "{name} TAKES IT ALL!"]
 FIGHT_WORD_TEMPLATES = ["GO!", "RACE!", "RUN!", "MOVE!"]
 
@@ -2264,6 +2275,19 @@ FIGHT_WORD_TEMPLATES = ["GO!", "RACE!", "RUN!", "MOVE!"]
 def _pick_variant(seed, salt, templates):
     rng = random.Random(hashlib.sha256((str(seed) + salt).encode()).hexdigest())
     return rng.choice(templates)
+
+
+_TEXT_PROBE = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+
+
+def _fit_text_font(text, font, max_w):
+    """Shrinks a font (by re-fetching smaller sizes from get_font's cache)
+    until `text` fits within max_w — a win-banner template with a longer
+    racer name, or one of the longer TIMEOUT_WIN_TEXT_TEMPLATES, can
+    otherwise render wider than the frame and get clipped off both edges."""
+    while _TEXT_PROBE.textlength(text, font=font) > max_w and font.size > 24:
+        font = get_font(font.size - 4)
+    return font
 
 
 # --- Rendering ---------------------------------------------------------
@@ -2310,7 +2334,10 @@ def build_race_clip(race):
     finish_pop_font = get_font(int(h * 0.020))
 
     title_text = f"{n}-Way Maze Race"
-    win_text_template = _pick_variant(race["seed"], "wintext", WIN_TEXT_TEMPLATES)
+    win_text_template = (_pick_variant(race["seed"], "wintext", WIN_TEXT_TEMPLATES) if race["winner_finished"]
+                          else _pick_variant(race["seed"], "timeoutwintext", TIMEOUT_WIN_TEXT_TEMPLATES))
+    win_text = win_text_template.format(name=race["winner_name"])
+    win_font = _fit_text_font(win_text, win_font, w * 0.94)
     go_word = _pick_variant(race["seed"], "goword", FIGHT_WORD_TEMPLATES)
 
     ambient_particles = _make_ambient_particles(race["seed"], 14, w, h)
@@ -2502,6 +2529,8 @@ def build_battle_clip(race):
     title_text = f"{n}-Way Battle Royale"
     win_text_template = (_pick_variant(race["seed"], "wintext", WIN_TEXT_TEMPLATES) if race["winner_finished"]
                           else _pick_variant(race["seed"], "battlewintext", BATTLE_WIN_TEXT_TEMPLATES))
+    win_text = win_text_template.format(name=race["winner_name"])
+    win_font = _fit_text_font(win_text, win_font, w * 0.94)
     go_word = _pick_variant(race["seed"], "goword", FIGHT_WORD_TEMPLATES)
 
     ambient_particles = _make_ambient_particles(race["seed"], 14, w, h)
