@@ -363,9 +363,25 @@ MAZE_STRUCTURE_KINDS = [
 ]
 
 
+# Reference (Square Race: Color Clash) boards read as one big open room —
+# racers clash, collide and bounce across a mostly-open floor with sparse
+# obstacles, not a tightly-branching 1-wide-corridor labyrinth. Weighted so
+# the open/wide kinds dominate (also a nice side effect: wide corridors are
+# far less prone to the multi-racer chokepoint deadlocks a true labyrinth
+# invites), while the tighter/artsier kinds still show up occasionally for
+# variety across many uploads instead of every board looking identical.
+MAZE_STRUCTURE_WEIGHTS = {
+    "open_rooms": 30, "classic": 20, "scatter_pillars": 15, "terraces": 15,
+    "spine_branches": 5, "spiral": 4, "radial": 4, "double_helix": 3,
+    "symmetric": 2, "sparse_labyrinth": 2,
+}
+
+
 def pick_maze_structure(seed):
     struct_rng = random.Random(hashlib.sha256((str(seed) + "structure").encode()).hexdigest())
-    return struct_rng.choice(MAZE_STRUCTURE_KINDS)
+    kinds = list(MAZE_STRUCTURE_WEIGHTS.keys())
+    weights = list(MAZE_STRUCTURE_WEIGHTS.values())
+    return struct_rng.choices(kinds, weights=weights, k=1)[0]
 
 
 def generate_structured_maze(kind, cols, rows, rng, n_racers=6):
@@ -389,9 +405,14 @@ def generate_structured_maze(kind, cols, rows, rng, n_racers=6):
     elif kind == "sparse_labyrinth":
         add_loops(open_right, open_down, cols, rows, rng, p=0.02)
     elif kind == "open_rooms":
-        add_loops(open_right, open_down, cols, rows, rng, p=0.55)
+        # The reference's own dominant look: one big mostly-open board
+        # rather than a branching corridor network — pushed wider/roomier
+        # than before (p 0.55->0.72, bigger/denser rooms) now that this is
+        # the primary structure kind instead of one of ten equally-likely
+        # options.
+        add_loops(open_right, open_down, cols, rows, rng, p=0.72)
         carve_rooms(open_right, open_down, cols, rows, rng,
-                    room_count=max(4, (cols * rows) // 24) + room_scale, max_size=4)
+                    room_count=max(5, (cols * rows) // 18) + room_scale, max_size=5)
     elif kind == "spiral":
         _bias_spiral(open_right, open_down, cols, rows, rng)
     elif kind == "radial":

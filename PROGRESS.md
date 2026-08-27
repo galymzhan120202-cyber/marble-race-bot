@@ -252,6 +252,29 @@ inertia, and sharp corner collisions" with racers "spinning wildly."
       the earlier bug-hunting pass. Drop mode already used real square
       bodies/physics rotation from the start and was unaffected.
 
+## Maze structure: open-board layout to match the reference (2026-08-27)
+
+User asked to rebuild the maze specifically according to the reference
+game's logic. The reference reads as one big mostly-open board — racers
+clash/collide/bounce across open floor with sparse obstacles — not a
+tightly-branching 1-wide-corridor labyrinth, which is what most of our 10
+`MAZE_STRUCTURE_KINDS` produce.
+
+- [x] `pick_maze_structure` now weights selection (`MAZE_STRUCTURE_WEIGHTS`)
+      so the open/wide kinds (`open_rooms`, `classic`, `scatter_pillars`,
+      `terraces` — 80% combined) dominate, while the tighter/artsier kinds
+      (`spiral`, `radial`, `double_helix`, `symmetric`, `sparse_labyrinth`,
+      `spine_branches` — 20% combined) still show up occasionally for
+      variety instead of every board looking identical.
+- [x] `open_rooms` itself widened further (loop probability 0.55->0.72,
+      bigger/denser rooms) now that it's the primary structure instead of
+      one of ten equally-likely options.
+- [x] Nice side effect, confirmed via the batch harness: wider corridors
+      are far less prone to multi-racer chokepoint deadlocks than a true
+      labyrinth. Race mode's "ran out of time" rate dropped further,
+      2.3% -> 0.7% (700 sims, all n_racers 2-8). Battle mode unaffected
+      (13.3%, same as its established baseline).
+
 ## Still to do
 
 - [ ] Do a real (confirmed, explicit) first upload test — either manually
