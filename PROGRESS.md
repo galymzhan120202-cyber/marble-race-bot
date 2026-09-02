@@ -381,6 +381,46 @@ tuning (elasticity/friction/bounce), not just more stall-detection patches.
       in Battle — so it was deliberately left alone rather than
       "fixed" without evidence of an actual bug.
 
+## Drop mode: 4 randomized arena layouts (2026-09-02)
+
+User asked for Drop mode to have 4 different board layouts, randomly
+selected per video, instead of always the same fixed Plinko field.
+
+- [x] Added `DROP_ARENA_KINDS` (`classic_plinko`, `chevron_funnel`,
+      `blade_storm`, `narrows_chute`), picked per-seed via the existing
+      `peg_rng` so it's fully deterministic from the video seed like
+      everything else. New helper functions `_build_drop_pegs`/
+      `_drop_peg_keep` in `race_sim.py`.
+      - `classic_plinko`: the original dense staggered field + 2 blades
+        (unchanged from before this change).
+      - `chevron_funnel`: a repeating hourglass/pinch gap down the
+        track + 1 slower blade at the midpoint.
+      - `blade_storm`: half-density peg field (every other row) + 4 fast
+        blades spread down the track.
+      - `narrows_chute`: two peg "walls" converge from the side walls
+        toward center as the track descends (funnels racers into a
+        single lane), opening back up for the last 15% before the
+        finish + 1 blade near the throat.
+      All four arenas **reuse the exact same underlying peg grid**
+      (identical row/column spacing, identical jitter, identical
+      peg_radius) that the original safety-margin comment already
+      established keeps gaps at a safe ~2x racer diameter — each arena
+      only masks out *which* grid positions get a peg, never changes the
+      spacing itself, so none of them can introduce a tighter-than-tested
+      gap. `narrows_chute`'s chute floor width is capped at >=
+      0.40*track_w (~4.75 racer diameters), far above the safety margin.
+- [x] Batch-audited all 4 arenas (60 seeds x 3 `n_racers` = ~180 sims,
+      arenas split ~evenly by the random pick): 0% racers stuck/stalled
+      3+ seconds in any arena (max observed stall 1.8s, well under the
+      real-jam threshold), 0 non-finite-position errors, roughly even
+      arena distribution confirming the random pick works. `classic_plinko`
+      shows the same pre-existing ~4.8% "didn't finish within
+      `max_seconds`" rate as before this change (not a regression — same
+      board as always).
+- [x] `simulate_drop`'s return dict now includes `arena_kind` (unused by
+      `build_drop_clip`/`drop_gen.py` so far, kept for future
+      title/description/debugging use).
+
 ## Still to do
 
 - [ ] Do a real (confirmed, explicit) first upload test — either manually

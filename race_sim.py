@@ -1932,6 +1932,91 @@ DROP_CANDY_COLORS = [
 ]
 DROP_OBSTACLE_COLORS = [(255, 140, 30), (255, 255, 255), (185, 90, 240)]  # orange, white, purple
 
+# Four board layouts, picked per-seed (see `arena_kind` in simulate_drop).
+# Every kind reuses the exact same staggered peg grid — same row/col
+# spacing, same jitter, same safety margin between adjacent pegs — and
+# only masks out which grid positions actually get a peg (see
+# `_drop_peg_keep`). That guarantees no arena can introduce a
+# tighter-than-tested gap: a masked-out grid is by construction never
+# denser than the original "classic_plinko" layout that gap was tuned for.
+DROP_ARENA_KINDS = ["classic_plinko", "chevron_funnel", "blade_storm", "narrows_chute"]
+
+# Spinning blades per arena, as (y_frac along the track, length as a
+# fraction of track width). Rotation direction alternates per blade,
+# speed is randomized per-seed same as the original 2-blade layout was.
+DROP_ARENA_SPINNERS = {
+    "classic_plinko": [(0.34, 0.55), (0.63, 0.55)],
+    "chevron_funnel": [(0.50, 0.30)],
+    "blade_storm": [(0.20, 0.50), (0.42, 0.42), (0.64, 0.50), (0.86, 0.42)],
+    "narrows_chute": [(0.55, 0.34)],
+}
+
+
+def _drop_peg_keep(kind, row_i, col_i, x, cx, track_w, col_spacing, progress):
+    """True if this grid position gets a peg in this arena. `progress` is
+    0 at the top of the peg field, 1 at the bottom."""
+    if kind == "classic_plinko":
+        return True
+    if kind == "blade_storm":
+        # Sparse field (half the rows) so the 4 blades dominate the board
+        # instead of getting buried in a dense peg field.
+        return row_i % 2 == 0
+    if kind == "chevron_funnel":
+        # A repeating hourglass/funnel gap: wide open, narrows to a pinch,
+        # widens again, over and over down the track.
+        band_period = 8
+        phase = (row_i % band_period) / band_period
+        triangle = 1 - abs(1 - 2 * phase)  # 0 at phase 0/1, 1 at phase 0.5
+        gap_half = track_w * (0.06 + 0.40 * triangle)
+        return abs(x - cx) > gap_half
+    if kind == "narrows_chute":
+        # Two peg "walls" that converge from the side walls toward the
+        # center as the track descends, funneling racers into a single
+        # chute — the chute stays >= 0.40*track_w wide even at its
+        # narrowest, comfortably more than the racer diameter needs, and
+        # clears out entirely for the last 15% before the finish.
+        if progress > 0.85:
+            return False
+        wall_dist = track_w * (0.46 - 0.26 * min(1.0, progress))
+        return abs(abs(x - cx) - wall_dist) < col_spacing * 0.9
+    return True
+
+
+def _build_drop_pegs(kind, peg_rng, left, right, top_y, finish_y, h, racer_radius, peg_radius):
+    """Staggered peg field (classic Plinko/bean-machine layout) — every
+    other row offset by half the column spacing so a falling square can
+    never thread a perfectly straight gap all the way down. Spacing is in
+    racer-radius units so the gap between adjacent peg edges
+    (col_spacing - 2*peg_radius = 4.0*racer_radius here) stays a
+    comfortable ~2x a racer's diameter — wide enough that two pegs never
+    wedge a racer in place. See `_drop_peg_keep` for how arenas vary
+    without touching this spacing."""
+    track_w = right - left
+    cx = (left + right) / 2
+    row_spacing = racer_radius * 5.5
+    col_spacing = racer_radius * 5.0
+    y_start = top_y + h * 0.24
+    y_end = finish_y - h * 0.14
+    pegs = []
+    y = y_start
+    row_i = 0
+    while y < y_end:
+        progress = 0.0 if y_end <= y_start else (y - y_start) / (y_end - y_start)
+        offset = (col_spacing / 2) if row_i % 2 else 0.0
+        x = left + peg_radius * 2.2 + offset
+        col_i = 0
+        while x < right - peg_radius * 2.2:
+            if _drop_peg_keep(kind, row_i, col_i, x, cx, track_w, col_spacing, progress):
+                jx = peg_rng.uniform(-peg_radius * 0.35, peg_radius * 0.35)
+                jy = peg_rng.uniform(-peg_radius * 0.35, peg_radius * 0.35)
+                px, py = x + jx, y + jy
+                pegs.append((px, py, DROP_OBSTACLE_COLORS[len(pegs) % len(DROP_OBSTACLE_COLORS)]))
+            x += col_spacing
+            col_i += 1
+        y += row_spacing
+        row_i += 1
+    return pegs
+
 
 def simulate_drop(w, h, seed, fps=24, max_seconds=22, min_seconds=8, n_racers=None, forced_racers=None):
     """Gravity-driven descent: no target/steering state per racer at all —
@@ -1982,44 +2067,26 @@ def simulate_drop(w, h, seed, fps=24, max_seconds=22, min_seconds=8, n_racers=No
         seg.collision_type = WALL_TYPE
         space.add(seg)
 
-    # Staggered peg field (classic Plinko/bean-machine layout) — every other
-    # row offset by half the column spacing so a falling square can never
-    # thread a perfectly straight gap all the way down.
+    # Board layout: picked per-seed from DROP_ARENA_KINDS, see there for
+    # what each one looks like.
     peg_rng = random.Random(hashlib.sha256((str(seed) + "pegs").encode()).hexdigest())
-    # In racer-radius units so the gap between adjacent peg edges
-    # (col_spacing - 2*peg_radius = 4.0*racer_radius here) stays a
-    # comfortable ~2x a racer's diameter — wide enough that two pegs never
-    # wedge a racer in place.
-    row_spacing = racer_radius * 5.5
-    col_spacing = racer_radius * 5.0
-    pegs = []
-    y = top_y + h * 0.24
-    row_i = 0
-    while y < finish_y - h * 0.14:
-        offset = (col_spacing / 2) if row_i % 2 else 0.0
-        x = left + peg_radius * 2.2 + offset
-        while x < right - peg_radius * 2.2:
-            jx = peg_rng.uniform(-peg_radius * 0.35, peg_radius * 0.35)
-            jy = peg_rng.uniform(-peg_radius * 0.35, peg_radius * 0.35)
-            px, py = x + jx, y + jy
-            shape = pymunk.Circle(space.static_body, peg_radius, offset=(px, py))
-            shape.elasticity = DROP_PEG_ELASTICITY
-            shape.friction = 0.1
-            shape.collision_type = WALL_TYPE
-            space.add(shape)
-            pegs.append((px, py, DROP_OBSTACLE_COLORS[len(pegs) % len(DROP_OBSTACLE_COLORS)]))
-            x += col_spacing
-        y += row_spacing
-        row_i += 1
+    arena_kind = peg_rng.choice(DROP_ARENA_KINDS)
+    pegs = _build_drop_pegs(arena_kind, peg_rng, left, right, top_y, finish_y, h, racer_radius, peg_radius)
+    for (px, py, _pcolor) in pegs:
+        shape = pymunk.Circle(space.static_body, peg_radius, offset=(px, py))
+        shape.elasticity = DROP_PEG_ELASTICITY
+        shape.friction = 0.1
+        shape.collision_type = WALL_TYPE
+        space.add(shape)
 
-    # A couple of spinning kinematic blades for extra chaos partway down —
-    # pymunk auto-integrates a kinematic body's angle from angular_velocity
-    # every space.step, so no manual per-frame rotation bookkeeping needed.
+    # Spinning kinematic blades for extra chaos partway down — pymunk
+    # auto-integrates a kinematic body's angle from angular_velocity every
+    # space.step, so no manual per-frame rotation bookkeeping needed.
     blades = []
-    for bi, frac in enumerate((0.34, 0.63)):
+    for bi, (frac, len_frac) in enumerate(DROP_ARENA_SPINNERS[arena_kind]):
         by = top_y + track_h * frac
         bx = (left + right) / 2
-        blen = track_w * 0.55
+        blen = track_w * len_frac
         bbody = pymunk.Body(body_type=pymunk.Body.KINEMATIC)
         bbody.position = (bx, by)
         bbody.angular_velocity = (1 if bi % 2 == 0 else -1) * peg_rng.uniform(1.4, 2.2)
@@ -2185,6 +2252,7 @@ def simulate_drop(w, h, seed, fps=24, max_seconds=22, min_seconds=8, n_racers=No
         "theme": {"floor": DROP_SKY_BLUE, "particle": (255, 255, 255)},  # generate_thumbnail needs these keys
         "finale_start": len(frames) - finale_frames,
         "seed": seed,
+        "arena_kind": arena_kind,
     }
 
 
