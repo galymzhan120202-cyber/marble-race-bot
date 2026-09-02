@@ -749,6 +749,11 @@ WALL_TYPE = 0
 RACER_TYPE_BASE = 10
 FINISH_TYPE = 500
 
+# Race mode's racer-vs-racer separation force (see simulate_race) — module
+# level so a batch audit script can tune these without editing the function.
+REPEL_RADIUS_CELLS = 1.6
+_REPEL_STRENGTH = 1200.0
+
 
 def simulate_race(w, h, seed, fps=24, max_seconds=28, min_seconds=13, n_racers=None,
                    cols=None, rows=None, forced_racers=None, required_finishers=1):
@@ -812,6 +817,14 @@ def simulate_race(w, h, seed, fps=24, max_seconds=28, min_seconds=13, n_racers=N
     # reopen any of the stuck/wedge bugs fixed earlier; only its straight
     # (non-diagonal) reach shrinks, which if anything leaves more room.
     RACER_SIDE = geo.racer_radius * math.sqrt(2)
+    # Tried widening this from 0.08 (rounder corners = a bigger, more
+    # circle-like contact normal, theoretically a "cleaner" bounce) but
+    # batch-tested WORSE for jam-clearing (13.7% -> ~22% same-cell dwell
+    # rate): a corner-vs-corner hit's actual escape mechanism is the torque
+    # it imparts, which shunts a racer sideways at an angle past whatever
+    # it's jammed against — rounding the corners suppresses exactly that
+    # torque, so hits land closer to head-on/central and racers just bounce
+    # straight back into the same jam instead of glancing off it. Reverted.
     RACER_POLY_RADIUS = RACER_SIDE * 0.08
     bodies, shapes = [], []
     for i in range(n_racers):
@@ -1001,14 +1014,56 @@ def simulate_race(w, h, seed, fps=24, max_seconds=28, min_seconds=13, n_racers=N
     bump_frame_flags = {}  # frame_idx -> (x, y, intensity, kind)
     frame_idx = 0
 
+    # Short-range separation force: every racer's steering target is picked
+    # from the maze graph alone, with zero awareness of where any OTHER
+    # racer currently is, so several racers converging on the same doorway
+    # pile directly on top of each other. An earlier version of this applied
+    # the push to every nearby pair unconditionally — batch-tested it cut
+    # stuck-dwell cases a lot (15% -> ~2%) but also suppressed ~95% of the
+    # visible racer-vs-racer bump/spin events the whole square-body physics
+    # change exists to show, because it started shoving racers apart before
+    # they ever actually touched. Gated on closing speed instead: skip the
+    # push entirely when a pair is approaching each other fast (that's a
+    # real bump — let the elastic collision itself produce the visible
+    # bounce/spin, unmodified) and only apply it when they're already close
+    # AND not separating (near-zero or negative relative speed along the
+    # line between them) — i.e. genuinely idling against each other, which
+    # is what an actual jam/wedge looks like, not a passing bump.
+    REPEL_RADIUS = geo.cell * REPEL_RADIUS_CELLS
+    REPEL_STRENGTH = _REPEL_STRENGTH
+    REPEL_CLOSING_SPEED_GATE = MAX_SPEED * 0.25
+
     while step_counter["n"] < max_steps:
         step_counter["n"] += 1
         t_now = step_counter["n"] * dt
 
+        positions_now = {i: bodies[i].position for i in range(n_racers) if active[i]}
+        repel_force = {i: [0.0, 0.0] for i in positions_now}
+        active_idxs = list(positions_now.keys())
+        for a_ in range(len(active_idxs)):
+            for b_ in range(a_ + 1, len(active_idxs)):
+                i_, j_ = active_idxs[a_], active_idxs[b_]
+                xi, yi = positions_now[i_]
+                xj, yj = positions_now[j_]
+                ddx, ddy = xi - xj, yi - yj
+                d = math.hypot(ddx, ddy)
+                if 0 < d < REPEL_RADIUS:
+                    nx, ny = ddx / d, ddy / d
+                    vix, viy = bodies[i_].velocity
+                    vjx, vjy = bodies[j_].velocity
+                    closing_speed = -((vix - vjx) * nx + (viy - vjy) * ny)
+                    if closing_speed > REPEL_CLOSING_SPEED_GATE:
+                        continue
+                    strength = REPEL_STRENGTH * (1 - d / REPEL_RADIUS)
+                    repel_force[i_][0] += nx * strength
+                    repel_force[i_][1] += ny * strength
+                    repel_force[j_][0] -= nx * strength
+                    repel_force[j_][1] -= ny * strength
+
         for i in range(n_racers):
             if not active[i]:
                 continue
-            x, y = bodies[i].position
+            x, y = positions_now[i]
             c = min(cols - 1, max(0, int((x - geo.border_w) / geo.cell)))
             r = min(rows - 1, max(0, int((y - geo.top_border) / geo.cell)))
             r = min(r, rows - 1)
@@ -1041,8 +1096,9 @@ def simulate_race(w, h, seed, fps=24, max_seconds=28, min_seconds=13, n_racers=N
             jr = per_racer_rng[i]
             jitter_ang = math.sin(t_now * JITTER_HZ_SCALE + i * 1.7) * jr.uniform(0.5, 1.0)
             jitter_mag = mass * 60
-            fx = mass * steer_x + math.cos(jitter_ang) * jitter_mag
-            fy = mass * steer_y + math.sin(jitter_ang) * jitter_mag
+            rfx, rfy = repel_force[i]
+            fx = mass * steer_x + math.cos(jitter_ang) * jitter_mag + rfx
+            fy = mass * steer_y + math.sin(jitter_ang) * jitter_mag + rfy
             bodies[i].apply_force_at_world_point((fx, fy), bodies[i].position)
 
         space.step(dt)

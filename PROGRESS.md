@@ -275,6 +275,112 @@ tightly-branching 1-wide-corridor labyrinth, which is what most of our 10
       2.3% -> 0.7% (700 sims, all n_racers 2-8). Battle mode unaffected
       (13.3%, same as its established baseline).
 
+## Race mode: fixing racers colliding and stalling in one spot (2026-09-02)
+
+User reported racers visibly colliding and getting stuck jostling in one
+spot in both Race and Battle mode, and asked for a systematic audit rather
+than a one-off fix, plus specifically asked to look at real collision-physics
+tuning (elasticity/friction/bounce), not just more stall-detection patches.
+
+- [x] **Confirmed the regression, quantified with a new metric.** The
+      existing batch-audit checks (raw per-frame displacement, non-finite
+      positions, "ran out of time") all read ~0% on current `main` — they
+      genuinely don't catch this failure mode, because a jammed pair of
+      racers keeps jittering a few pixels every frame from the elastic
+      bounce, which clears the old displacement threshold even with zero
+      real progress. Added a same-maze-cell-dwell check instead (how long a
+      racer stays in the exact same grid cell) and found Race mode
+      genuinely regressed: **15.0% of races** (40 seeds x 7 `n_racers`,
+      matched sample) had at least one racer stuck in the same cell for
+      3+ seconds, up to ~9s in the worst cases — never caught because
+      nobody re-ran the batch harness after `b911037` (square collision
+      bodies) landed immediately followed by `dd04184` (open-board maze
+      weighting, which packs more racers into open rooms = more
+      simultaneous pileups). This is the same corner-wedging failure mode
+      already proven to hurt Battle mode when square bodies were tried
+      there, now reproduced in Race mode by the combination of both
+      changes together.
+- [x] **Tried real collision-physics tuning first, per the user's request
+      — batch-tested it, and it made things WORSE, not better:**
+      - Rounding the racer squares' corners further (0.08 -> 0.18 of side,
+        theory: bigger/cleaner contact normal = a more "ball-like" bounce)
+        pushed the dwell rate UP to ~22%. Root cause: a corner-vs-corner
+        hit's actual escape mechanism is the *torque* it imparts, which
+        shunts a racer sideways at an angle past whatever it's jammed
+        against — rounding the corners suppresses exactly that torque, so
+        hits land closer to head-on and racers just bounce straight back
+        into the same jam instead of glancing off it. Reverted.
+      - Forcing lower racer-vs-racer friction (0.35 -> 0.08, theory: real
+        marbles don't "grab" each other tangentially) made no measurable
+        improvement in isolation and stacked with the corner-rounding
+        change made things worse. Reverted.
+      - More pymunk solver iterations (10 -> 20, theory: a dense pileup's
+        contacts are under-resolved by the default iteration count) also
+        made things slightly worse in isolation (13.7% -> 16.6%), not
+        better. Reverted.
+      - Conclusion: the collision *material* physics (elasticity/friction/
+        corner shape) were not the actual bug — `RACER_VS_RACER_ELASTICITY
+        = 0.92` was already producing a strong, correct bounce on contact.
+        The bug is that the *continuous steering force* reasserts itself
+        every single 1/120s physics step regardless of what the collision
+        just did, so on a soft/repeated contact (below the 15.0 impulse
+        threshold that opens the post-bump recovery window) the bounce
+        gets steered right back into the same jam before it can ever
+        separate the racers.
+- [x] **Real fix: a short-range separation force, gated on closing speed**
+      (new `simulate_race` block, module constants `REPEL_RADIUS_CELLS`/
+      `_REPEL_STRENGTH` near `RACER_TYPE_BASE`). Every racer's steering
+      target comes purely from the maze graph with zero awareness of where
+      other racers currently are, so several racers converging on the same
+      doorway all aim at the literal same point and pile on top of each
+      other — this adds a small extra repulsion force between any two
+      racers within `REPEL_RADIUS_CELLS` (1.6 cells) of each other, so they
+      start nudging apart before/while jammed instead of relying solely on
+      the post-collision recovery window to pull them apart after the fact.
+      Critically, it's **gated on relative closing speed**: a fast, real
+      bump (two racers actively approaching each other) is left completely
+      alone so the elastic collision itself produces the visible bounce/
+      spin — the repulsion only engages when a nearby pair's relative speed
+      along the line between them is near zero or negative, i.e. they're
+      genuinely idling against each other, which is what an actual wedge
+      looks like as opposed to a passing hit. An earlier ungated version of
+      this cut the dwell rate hard (15% -> ~2%) but also suppressed ~95% of
+      the visible racer-vs-racer bump/spin events (125.6 -> 6.5 avg
+      bump-flagged frames/race, 6-racer sample) — it was shoving racers
+      apart before they ever visibly touched, defeating the point of the
+      square-body physics change. The closing-speed gate keeps the tradeoff
+      reasonable: at the shipped tuning (radius 1.6 cells, strength 1200),
+      avg racer-vs-racer bump-flagged frames per race is 21.5 (vs. 120.8
+      baseline, 6-racer sample) — a real drop from what was mostly
+      repeated stutter-collisions off a jam rather than distinct bumps, not
+      a race with no visible contact.
+- [x] **Result, 350-sim confirmatory batch (50 seeds x 7 `n_racers`,
+      2-8):** same-cell dwell 3+s: 15.0% -> **3.7%**. Non-finite positions:
+      0% (unchanged). "Ran out of time" (timeout): 0% (down from 0.4%
+      pre-fix at matched sample size). No errors.
+- [x] **Battle mode: audited, found NOT regressed, left untouched.** Same
+      same-cell-dwell check on Battle mode reads high (52.4% of battles
+      have a racer dwelling 3+s in one cell, up to 17s+ in the worst
+      cases) — but Battle's own "nothing happened" metric (no finish, no
+      elimination, everyone still alive at timeout — the actual bug
+      signal from the original 2026-08-27 audit) measured 14.8% on 210
+      sims, statistically indistinguishable from the already-investigated
+      and accepted ~13.3% baseline. The high dwell number is explained by
+      Battle's fundamentally different objective: unlike Race (where two
+      racers meeting is always friction to minimize), Battle's core
+      mechanic is chasing pickups/enemies and fighting within a small
+      area, which legitimately keeps a racer in the same maze cell for
+      many seconds without that being stuck/broken — confirmed via the
+      same confined-jitter check used for Race, which read 0% for Battle
+      too (no racer was ever pixel-frozen, just moving around within one
+      cell region, consistent with active combat rather than a wedge).
+      Applying Race's separation-force fix to Battle would work against
+      its intended design (racers need to be able to reach each other to
+      fight/pick up items) and risks repeating the exact regression the
+      2026-08-27 audit already found when square-body physics were tried
+      in Battle — so it was deliberately left alone rather than
+      "fixed" without evidence of an actual bug.
+
 ## Still to do
 
 - [ ] Do a real (confirmed, explicit) first upload test — either manually
