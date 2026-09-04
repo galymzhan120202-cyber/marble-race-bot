@@ -1,0 +1,1081 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Marble Race</title>
+<meta name="description" content="Watch AI marbles race a procedural maze. Pick your racer, pick the field, hit go.">
+<style>
+  :root{
+    --accent:#0a84ff;
+    --accent-2:#5e9eff;
+    --bg-0:#08090d;
+    --bg-1:#111319;
+    --card:rgba(255,255,255,0.06);
+    --card-border:rgba(255,255,255,0.10);
+    --card-hover:rgba(255,255,255,0.10);
+    --white:#f5f5f7;
+    --dim:#9a9ba3;
+    --dimmer:#68696f;
+    --good:#30d158;
+    --warn:#ff9f0a;
+    --danger:#ff453a;
+    --radius-lg:24px;
+    --radius-md:16px;
+    --radius-sm:10px;
+    --font:"SF Pro Display",-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+  html,body{height:100%;}
+  body{
+    margin:0;
+    font-family:var(--font);
+    color:var(--white);
+    background:
+      radial-gradient(1200px 800px at 15% -10%, #1b2136 0%, transparent 60%),
+      radial-gradient(1000px 700px at 110% 10%, #1a1430 0%, transparent 55%),
+      linear-gradient(180deg, var(--bg-1), var(--bg-0));
+    min-height:100%;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    overflow-x:hidden;
+    -webkit-font-smoothing:antialiased;
+  }
+  #app{
+    position:relative;
+    width:100%;
+    max-width:480px;
+    min-height:100dvh;
+    display:flex;
+    flex-direction:column;
+    padding:max(18px, env(safe-area-inset-top)) 18px max(18px, env(safe-area-inset-bottom));
+  }
+  @media (min-width:560px){
+    #app{
+      min-height:min(920px, 96dvh);
+      margin:18px 0;
+      border-radius:36px;
+      border:1px solid var(--card-border);
+      box-shadow:0 30px 80px rgba(0,0,0,0.55), inset 0 1px 0 rgba(255,255,255,0.04);
+      overflow:hidden;
+      background:linear-gradient(180deg, #14161d, #0a0b10);
+    }
+  }
+  .screen{display:none; flex-direction:column; flex:1; min-height:0; animation:fadein .35s ease;}
+  .screen.active{display:flex;}
+  @keyframes fadein{from{opacity:0; transform:translateY(6px);} to{opacity:1; transform:none;}}
+
+  .eyebrow{font-size:13px; font-weight:600; letter-spacing:.06em; text-transform:uppercase; color:var(--accent-2); margin:0 0 6px;}
+  h1{font-size:34px; font-weight:800; margin:0 0 4px; letter-spacing:-0.02em;}
+  h2{font-size:22px; font-weight:700; margin:0 0 2px; letter-spacing:-0.01em;}
+  p.sub{color:var(--dim); font-size:15px; line-height:1.45; margin:0 0 22px;}
+
+  .btn{
+    appearance:none; border:none; cursor:pointer; font-family:inherit;
+    font-weight:700; font-size:17px; letter-spacing:-0.01em;
+    padding:16px 24px; border-radius:999px; color:#fff;
+    background:linear-gradient(180deg, var(--accent-2), var(--accent));
+    box-shadow:0 8px 24px rgba(10,132,255,0.35), inset 0 1px 0 rgba(255,255,255,0.35);
+    transition:transform .12s ease, box-shadow .12s ease, opacity .12s ease;
+    width:100%; text-align:center;
+  }
+  .btn:active{transform:scale(0.97);}
+  .btn:disabled{opacity:.35; cursor:not-allowed; box-shadow:none;}
+  .btn.secondary{
+    background:var(--card); color:var(--white); box-shadow:none;
+    border:1px solid var(--card-border);
+  }
+  .btn.ghost{
+    background:transparent; color:var(--dim); box-shadow:none; border:1px solid transparent;
+    font-weight:600; font-size:15px; padding:10px 16px;
+  }
+  .btn-row{display:flex; gap:10px;}
+  .btn-row .btn{flex:1;}
+
+  .card{
+    background:var(--card); border:1px solid var(--card-border);
+    border-radius:var(--radius-md); backdrop-filter:blur(20px);
+    -webkit-backdrop-filter:blur(20px);
+  }
+
+  /* ---------- Menu ---------- */
+  #screen-menu{align-items:stretch; justify-content:space-between; text-align:center; padding-top:6vh;}
+  .logo-orb{
+    width:104px; height:104px; margin:0 auto 22px; border-radius:32px;
+    background:
+      radial-gradient(circle at 32% 28%, #7ab8ff, #0a84ff 55%, #063f8a 100%);
+    box-shadow:0 16px 40px rgba(10,132,255,0.45), inset 0 2px 6px rgba(255,255,255,0.5), inset 0 -10px 20px rgba(0,0,40,0.35);
+    position:relative;
+  }
+  .logo-orb::before, .logo-orb::after{
+    content:""; position:absolute; border-radius:50%; background:#1a1d24;
+  }
+  .logo-orb::before{width:14px; height:20px; left:32px; top:38px; transform:rotate(-18deg);}
+  .logo-orb::after{width:14px; height:20px; right:32px; top:38px; transform:rotate(18deg);}
+  #screen-menu h1{font-size:40px;}
+  .menu-mid{margin-top:8px;}
+  .menu-bottom{display:flex; flex-direction:column; gap:12px; margin-top:24px;}
+  .stat-strip{display:flex; justify-content:center; gap:22px; margin:18px 0 30px; color:var(--dim); font-size:13px;}
+  .stat-strip b{display:block; color:var(--white); font-size:18px; font-weight:800;}
+
+  /* ---------- Ko-fi pill ---------- */
+  .kofi-pill{
+    position:fixed; right:max(12px, env(safe-area-inset-right));
+    top:max(12px, env(safe-area-inset-top));
+    display:flex; align-items:center; gap:6px;
+    background:rgba(20,20,24,0.72); border:1px solid rgba(255,255,255,0.14);
+    color:var(--white); text-decoration:none; font-size:12px; font-weight:600;
+    padding:7px 12px; border-radius:999px; backdrop-filter:blur(16px); -webkit-backdrop-filter:blur(16px);
+    box-shadow:0 8px 20px rgba(0,0,0,0.35); z-index:500; transition:transform .15s ease, background .15s ease;
+    white-space:nowrap;
+  }
+  .kofi-pill:active{transform:scale(0.96);}
+  .kofi-pill .cup{font-size:13px;}
+  @media (min-width:560px){ .kofi-pill{position:absolute;} }
+
+  /* ---------- Top bar (sub-screens) ---------- */
+  .topbar{display:flex; align-items:center; justify-content:space-between; margin-bottom:18px;}
+  .icon-btn{
+    width:38px; height:38px; border-radius:50%; display:flex; align-items:center; justify-content:center;
+    background:var(--card); border:1px solid var(--card-border); color:var(--white); font-size:17px;
+    cursor:pointer; flex:none;
+  }
+  .topbar .title{font-size:15px; font-weight:700; color:var(--dim); letter-spacing:.02em;}
+  .step-dots{display:flex; gap:5px;}
+  .step-dots span{width:6px; height:6px; border-radius:50%; background:var(--card-border);}
+  .step-dots span.on{background:var(--accent);}
+
+  /* ---------- Racer select ---------- */
+  #racer-grid{
+    display:grid; grid-template-columns:repeat(4, 1fr); gap:10px;
+    overflow-y:auto; padding-bottom:6px; margin-bottom:14px;
+  }
+  .racer-card{
+    aspect-ratio:1/1.12; border-radius:16px; border:2px solid transparent;
+    background:var(--card); display:flex; flex-direction:column; align-items:center; justify-content:center;
+    gap:6px; cursor:pointer; padding:6px 4px; transition:border-color .15s ease, transform .12s ease, background .15s ease;
+  }
+  .racer-card canvas{width:44px; height:44px; display:block;}
+  .racer-card span{font-size:11px; font-weight:600; color:var(--dim); max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+  .racer-card.selected{border-color:var(--accent); background:rgba(10,132,255,0.14); transform:translateY(-2px);}
+  .racer-card.selected span{color:var(--white);}
+  .racer-card:active{transform:scale(0.95);}
+
+  .field-box{padding:16px; margin-bottom:14px;}
+  .field-row{display:flex; align-items:center; justify-content:space-between;}
+  .field-row + .field-row{margin-top:14px;}
+  .field-label{font-size:14px; font-weight:600; color:var(--dim);}
+  .stepper{display:flex; align-items:center; gap:14px;}
+  .stepper button{
+    width:32px; height:32px; border-radius:50%; border:1px solid var(--card-border); background:rgba(255,255,255,0.05);
+    color:var(--white); font-size:18px; font-weight:700; cursor:pointer; line-height:1;
+  }
+  .stepper button:active{background:rgba(255,255,255,0.15);}
+  .stepper .val{min-width:22px; text-align:center; font-weight:800; font-size:17px;}
+
+  /* ---------- Mode select ---------- */
+  .mode-list{display:flex; flex-direction:column; gap:12px; overflow-y:auto;}
+  .mode-tile{
+    padding:16px; display:flex; align-items:center; gap:14px; cursor:pointer;
+    border:2px solid transparent; transition:border-color .15s ease, background .15s ease;
+  }
+  .mode-tile.selected{border-color:var(--accent); background:rgba(10,132,255,0.14);}
+  .mode-tile .emoji{font-size:26px; width:44px; text-align:center; flex:none;}
+  .mode-tile .txt h3{margin:0 0 2px; font-size:16px; font-weight:700;}
+  .mode-tile .txt p{margin:0; font-size:12.5px; color:var(--dim); line-height:1.35;}
+  .mode-tile.locked{cursor:default; opacity:.55;}
+  .badge-soon{
+    margin-left:auto; flex:none; font-size:10px; font-weight:800; letter-spacing:.04em;
+    background:rgba(255,159,10,0.18); color:var(--warn); padding:4px 8px; border-radius:999px;
+  }
+  .arena-box{padding:16px; margin-top:14px;}
+  .arena-choices{display:flex; gap:8px; margin-top:10px;}
+  .arena-choices button{
+    flex:1; padding:10px 4px; border-radius:12px; border:1px solid var(--card-border);
+    background:rgba(255,255,255,0.04); color:var(--dim); font-family:inherit; font-weight:700; font-size:12.5px; cursor:pointer;
+  }
+  .arena-choices button.on{background:rgba(10,132,255,0.18); border-color:var(--accent); color:var(--white);}
+
+  /* ---------- Race screen ---------- */
+  #screen-race{padding-top:0;}
+  .race-topbar{display:flex; align-items:center; justify-content:space-between; padding:2px 0 12px;}
+  .finish-counter{
+    background:var(--card); border:1px solid var(--card-border); border-radius:999px;
+    padding:8px 16px; font-weight:800; font-size:14px; display:flex; align-items:center; gap:6px;
+  }
+  .finish-counter .dot{width:7px; height:7px; border-radius:50%; background:var(--good);}
+  #race-stage{
+    position:relative; flex:1; min-height:0; border-radius:20px; overflow:hidden;
+    border:1px solid var(--card-border); background:#e9e4d6;
+    display:flex; align-items:center; justify-content:center;
+  }
+  #race-canvas{width:100%; height:100%; display:block;}
+  .countdown{
+    position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+    font-size:96px; font-weight:900; color:#fff; text-shadow:0 6px 30px rgba(0,0,0,0.5);
+    background:rgba(10,12,18,0.28); pointer-events:none;
+  }
+  .winner-overlay{
+    position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+    background:rgba(6,8,14,0.72); backdrop-filter:blur(6px); -webkit-backdrop-filter:blur(6px);
+    opacity:0; pointer-events:none; transition:opacity .3s ease;
+  }
+  .winner-overlay.show{opacity:1; pointer-events:auto;}
+  .winner-card{
+    background:rgba(24,26,34,0.9); border:1px solid rgba(255,255,255,0.14); border-radius:26px;
+    padding:28px 24px; width:82%; text-align:center; box-shadow:0 20px 60px rgba(0,0,0,0.5);
+  }
+  .winner-swatch{width:64px; height:64px; margin:0 auto 14px;}
+  .winner-card h2{font-size:22px; margin-bottom:2px;}
+  .winner-card p{color:var(--dim); font-size:13px; margin:0 0 20px;}
+  .race-controls{display:flex; gap:10px; margin-top:12px;}
+</style>
+</head>
+<body>
+<div id="app">
+
+  <!-- ================= MENU ================= -->
+  <section class="screen active" data-screen="menu" id="screen-menu">
+    <div class="menu-top">
+      <div class="logo-orb"></div>
+      <div class="eyebrow" style="text-align:center;">Marble Race</div>
+      <h1>Watch the maze<br>decide it.</h1>
+      <p class="sub" style="text-align:center; max-width:340px; margin-left:auto; margin-right:auto;">
+        Pick a racer, drop the field into a procedural maze, and watch real
+        physics — bumps, jams, lucky breaks — sort out who reaches the
+        finish first.
+      </p>
+    </div>
+    <div class="menu-bottom">
+      <button class="btn" id="btn-play">Play ▸</button>
+      <div class="stat-strip">
+        <div><b>16</b>Racers</div>
+        <div><b>2–8</b>Field size</div>
+        <div><b>∞</b>Mazes</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= RACER SELECT ================= -->
+  <section class="screen" data-screen="racer" id="screen-racer">
+    <div class="topbar">
+      <div class="icon-btn" data-nav="menu">←</div>
+      <div class="step-dots"><span class="on"></span><span></span><span></span></div>
+      <div style="width:38px;"></div>
+    </div>
+    <h2>Choose your racer</h2>
+    <p class="sub" style="margin-bottom:14px;">You'll follow this one on the track. The rest of the field fills in automatically.</p>
+    <div id="racer-grid"></div>
+    <button class="btn" id="btn-racer-next" disabled>Continue</button>
+  </section>
+
+  <!-- ================= MODE / ARENA SELECT ================= -->
+  <section class="screen" data-screen="mode" id="screen-mode">
+    <div class="topbar">
+      <div class="icon-btn" data-nav="racer">←</div>
+      <div class="step-dots"><span class="on"></span><span class="on"></span><span></span></div>
+      <div style="width:38px;"></div>
+    </div>
+    <h2>Pick a mode</h2>
+    <p class="sub" style="margin-bottom:14px;">More modes are on the way.</p>
+    <div class="mode-list">
+      <div class="mode-tile selected" data-mode="race">
+        <div class="emoji">🏁</div>
+        <div class="txt"><h3>Maze Race</h3><p>Steer-yourself AI racers thread a procedural labyrinth. First to the finish wins.</p></div>
+      </div>
+      <div class="mode-tile locked"><div class="emoji">⚔️</div><div class="txt"><h3>Battle Royale</h3><p>Pickups, eliminations, last one standing.</p></div><div class="badge-soon">SOON</div></div>
+      <div class="mode-tile locked"><div class="emoji">🎯</div><div class="txt"><h3>Marble Drop</h3><p>Gravity, pegs, spinning blades.</p></div><div class="badge-soon">SOON</div></div>
+      <div class="mode-tile locked"><div class="emoji">🏆</div><div class="txt"><h3>Tournament</h3><p>Bracket knockouts across heats.</p></div><div class="badge-soon">SOON</div></div>
+    </div>
+
+    <div class="field-box card">
+      <div class="field-row">
+        <div class="field-label">Field size</div>
+        <div class="stepper">
+          <button id="field-minus">−</button>
+          <div class="val" id="field-val">6</div>
+          <button id="field-plus">+</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="arena-box card">
+      <div class="field-label">Arena size</div>
+      <div class="arena-choices" id="arena-choices">
+        <button data-size="s">Compact</button>
+        <button data-size="m" class="on">Standard</button>
+        <button data-size="l">Sprawling</button>
+      </div>
+    </div>
+
+    <button class="btn" id="btn-mode-next" style="margin-top:16px;">Start Race ▸</button>
+  </section>
+
+  <!-- ================= RACE ================= -->
+  <section class="screen" data-screen="race" id="screen-race">
+    <div class="race-topbar">
+      <div class="icon-btn" data-nav="mode">←</div>
+      <div class="finish-counter"><span class="dot"></span><span id="finish-count">0</span>&nbsp;/&nbsp;<span id="finish-total">6</span>&nbsp;finished</div>
+      <div style="width:38px;"></div>
+    </div>
+    <div id="race-stage">
+      <canvas id="race-canvas"></canvas>
+      <div class="countdown" id="countdown" style="display:none;"></div>
+      <div class="winner-overlay" id="winner-overlay">
+        <div class="winner-card">
+          <canvas class="winner-swatch" id="winner-swatch"></canvas>
+          <h2 id="winner-name">—</h2>
+          <p id="winner-sub">reached the finish first</p>
+          <div class="race-controls">
+            <button class="btn secondary" id="btn-again">Race Again</button>
+            <button class="btn" id="btn-newracer">New Racer</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+</div>
+
+<a class="kofi-pill" href="https://ko-fi.com/weaponballarena" target="_blank" rel="noopener">
+  <span class="cup">☕</span>Support the channel
+</a>
+
+<script>
+"use strict";
+
+/* =========================================================================
+   Seeded RNG (mulberry32) — one stream per race, plus one per racer so a
+   racer's own "confusion" dice rolls don't perturb any other racer's.
+   ========================================================================= */
+function mulberry32(seed){
+  let a = seed >>> 0;
+  return function(){
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+function makeRng(seed){
+  const f = mulberry32(seed);
+  return {
+    random: f,
+    int: (n) => Math.floor(f() * n),
+    range: (a,b) => a + f() * (b - a),
+    choice: (arr) => arr[Math.floor(f() * arr.length)],
+  };
+}
+
+/* =========================================================================
+   Racer roster — ported from race_sim.py RACER_POOL.
+   ========================================================================= */
+const RACER_POOL = [
+  {name:"Blacky", color:[40,40,46],   weight:1.05, confusion:0.08},
+  {name:"Sunny",  color:[250,205,45], weight:0.92, confusion:0.10},
+  {name:"Cocoa",  color:[122,82,48],  weight:1.10, confusion:0.07},
+  {name:"Pine",   color:[35,112,72],  weight:1.00, confusion:0.09},
+  {name:"Tango",  color:[235,120,35], weight:0.95, confusion:0.12},
+  {name:"Ghost",  color:[218,218,224],weight:0.88, confusion:0.11},
+  {name:"Sky",    color:[55,140,225], weight:1.00, confusion:0.09},
+  {name:"Rosy",   color:[232,72,150], weight:0.90, confusion:0.13},
+  {name:"Cherry", color:[216,46,56],  weight:1.02, confusion:0.08},
+  {name:"Minty",  color:[70,210,172], weight:0.94, confusion:0.10},
+  {name:"Grape",  color:[142,82,202], weight:0.98, confusion:0.11},
+  {name:"Coral",  color:[255,132,112],weight:0.90, confusion:0.14},
+  {name:"Lime",   color:[172,220,52], weight:0.93, confusion:0.12},
+  {name:"Slate",  color:[102,112,132],weight:1.12, confusion:0.06},
+  {name:"Amber",  color:[236,166,42], weight:0.96, confusion:0.10},
+  {name:"Ruby",   color:[190,32,72],  weight:1.08, confusion:0.07},
+];
+const rgb = (c) => `rgb(${c[0]},${c[1]},${c[2]})`;
+const darker = (c, amt=55) => `rgb(${Math.max(0,c[0]-amt)},${Math.max(0,c[1]-amt)},${Math.max(0,c[2]-amt)})`;
+const lighten = (c, amt) => `rgb(${Math.round(c[0]+(255-c[0])*amt)},${Math.round(c[1]+(255-c[1])*amt)},${Math.round(c[2]+(255-c[2])*amt)})`;
+
+function drawRacerFace(ctx, size, color, angle=0, isYou=false){
+  const cx = size/2, cy = size/2, r = size*0.44;
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.rotate(angle);
+  ctx.translate(-cx, -cy);
+
+  const grad = ctx.createRadialGradient(cx-r*0.38, cy-r*0.42, r*0.08, cx, cy, r*1.05);
+  grad.addColorStop(0, lighten(color, 0.7));
+  grad.addColorStop(0.5, rgb(color));
+  grad.addColorStop(1, darker(color, 60));
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI*2);
+  ctx.fillStyle = grad;
+  ctx.fill();
+  ctx.lineWidth = Math.max(1.5, size*0.03);
+  ctx.strokeStyle = darker(color, 85);
+  ctx.stroke();
+
+  // faint rotating seam so spin from collisions still reads visually
+  ctx.beginPath();
+  ctx.strokeStyle = `${darker(color, 35)}`;
+  ctx.globalAlpha = 0.35;
+  ctx.lineWidth = Math.max(1, size*0.02);
+  ctx.arc(cx, cy, r*0.78, 0.15*Math.PI, 0.85*Math.PI);
+  ctx.stroke();
+  ctx.globalAlpha = 1;
+
+  // glossy specular highlight (view-fixed, not rotated with the marble)
+  ctx.restore();
+  ctx.save();
+  const hlx = cx - r*0.38, hly = cy - r*0.42;
+  const hl = ctx.createRadialGradient(hlx, hly, 0, hlx, hly, r*0.55);
+  hl.addColorStop(0, "rgba(255,255,255,0.65)");
+  hl.addColorStop(1, "rgba(255,255,255,0)");
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI*2);
+  ctx.clip();
+  ctx.fillStyle = hl;
+  ctx.fillRect(0, 0, size, size);
+  ctx.restore();
+
+  if (isYou){
+    ctx.save();
+    ctx.fillStyle = "#0a84ff";
+    ctx.strokeStyle = "#08111d";
+    ctx.lineWidth = Math.max(1, size*0.02);
+    const bx = size*0.82, by = size*0.16, r2 = size*0.11;
+    ctx.beginPath();
+    for(let i=0;i<5;i++){
+      const a1 = -Math.PI/2 + i*(2*Math.PI/5);
+      const a2 = a1 + Math.PI/5;
+      const x1 = bx + Math.cos(a1)*r2, y1 = by + Math.sin(a1)*r2;
+      const x2 = bx + Math.cos(a2)*r2*0.45, y2 = by + Math.sin(a2)*r2*0.45;
+      i===0? ctx.moveTo(x1,y1) : ctx.lineTo(x1,y1);
+      ctx.lineTo(x2,y2);
+    }
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.restore();
+  }
+}
+
+/* =========================================================================
+   Maze generation — DFS spanning tree + loops + rooms + BFS distance field.
+   Ported from generate_maze / add_loops / carve_rooms / bfs_distance_field.
+   ========================================================================= */
+function generateMaze(cols, rows, rng){
+  const openRight = Array.from({length:rows}, ()=>new Array(Math.max(0,cols-1)).fill(false));
+  const openDown  = Array.from({length:Math.max(0,rows-1)}, ()=>new Array(cols).fill(false));
+  const visited   = Array.from({length:rows}, ()=>new Array(cols).fill(false));
+  const start = [0, rng.int(cols)];
+  const stack = [start];
+  visited[start[0]][start[1]] = true;
+  while(stack.length){
+    const [r,c] = stack[stack.length-1];
+    const nb = [];
+    if (c>0 && !visited[r][c-1]) nb.push(["L",r,c-1]);
+    if (c<cols-1 && !visited[r][c+1]) nb.push(["R",r,c+1]);
+    if (r>0 && !visited[r-1][c]) nb.push(["U",r-1,c]);
+    if (r<rows-1 && !visited[r+1][c]) nb.push(["D",r+1,c]);
+    if (!nb.length){ stack.pop(); continue; }
+    const [dir,nr,nc] = nb[rng.int(nb.length)];
+    visited[nr][nc] = true;
+    if (dir==="L") openRight[r][c-1] = true;
+    else if (dir==="R") openRight[r][c] = true;
+    else if (dir==="U") openDown[r-1][c] = true;
+    else openDown[r][c] = true;
+    stack.push([nr,nc]);
+  }
+  return {openRight, openDown};
+}
+function addLoops(openRight, openDown, cols, rows, rng, p=0.12){
+  for(let r=0;r<rows;r++) for(let c=0;c<cols-1;c++)
+    if (!openRight[r][c] && rng.random()<p) openRight[r][c]=true;
+  for(let r=0;r<rows-1;r++) for(let c=0;c<cols;c++)
+    if (!openDown[r][c] && rng.random()<p) openDown[r][c]=true;
+}
+function carveRooms(openRight, openDown, cols, rows, rng){
+  const roomCount = Math.max(2, Math.floor((cols*rows)/45));
+  for(let i=0;i<roomCount;i++){
+    const rw = 2 + rng.int(2), rh = 2 + rng.int(2);
+    if (cols<=rw || rows<=rh) continue;
+    const c0 = cols-rw-1>0 ? rng.int(cols-rw-1) : 0;
+    const r0 = rows-rh-1>0 ? rng.int(rows-rh-1) : 0;
+    for(let r=r0;r<r0+rh;r++) for(let c=c0;c<c0+rw-1;c++) openRight[r][c]=true;
+    for(let r=r0;r<r0+rh-1;r++) for(let c=c0;c<c0+rw;c++) openDown[r][c]=true;
+  }
+}
+function bfsDistanceField(openRight, openDown, cols, rows, finishCell){
+  const dist = Array.from({length:rows}, ()=>new Array(cols).fill(null));
+  const [fr,fc] = finishCell;
+  dist[fr][fc] = 0;
+  const q = [[fr,fc]]; let qi = 0;
+  while(qi<q.length){
+    const [r,c] = q[qi++];
+    const d = dist[r][c];
+    if (c>0 && openRight[r][c-1] && dist[r][c-1]===null){ dist[r][c-1]=d+1; q.push([r,c-1]); }
+    if (c<cols-1 && openRight[r][c] && dist[r][c+1]===null){ dist[r][c+1]=d+1; q.push([r,c+1]); }
+    if (r>0 && openDown[r-1][c] && dist[r-1][c]===null){ dist[r-1][c]=d+1; q.push([r-1,c]); }
+    if (r<rows-1 && openDown[r][c] && dist[r+1][c]===null){ dist[r+1][c]=d+1; q.push([r+1,c]); }
+  }
+  return dist;
+}
+function openNeighbors(r,c,openRight,openDown,cols,rows){
+  const out = [];
+  if (c>0 && openRight[r][c-1]) out.push([r,c-1]);
+  if (c<cols-1 && openRight[r][c]) out.push([r,c+1]);
+  if (r>0 && openDown[r-1][c]) out.push([r-1,c]);
+  if (r<rows-1 && openDown[r][c]) out.push([r+1,c]);
+  return out;
+}
+
+/* =========================================================================
+   Geometry
+   ========================================================================= */
+function makeGeo(w, cols, rows){
+  const borderW = w*0.05;
+  const cell = (w - 2*borderW)/cols;
+  const wallThickness = cell*0.16;
+  const racerRadius = (cell - wallThickness)*0.30;
+  const topBorder = borderW;
+  const finishDepth = cell*1.3;
+  const bottomBorder = borderW;
+  const imgH = topBorder + rows*cell + finishDepth + bottomBorder;
+  return {
+    cols, rows, w, borderW, cell, wallThickness, racerRadius, topBorder, finishDepth, bottomBorder, imgH,
+    cellLeft:(c)=>borderW + c*cell,
+    cellTop:(r)=>topBorder + r*cell,
+    cellCenter(r,c){ return [this.cellLeft(c)+cell/2, this.cellTop(r)+cell/2]; },
+    finishZoneCenter(finishCol){
+      const x = this.cellLeft(finishCol)+cell/2;
+      const y = topBorder + rows*cell + finishDepth/2;
+      return [x,y];
+    }
+  };
+}
+function buildWallSegments(geo, openRight, openDown, finishCol){
+  const {cols, rows, cell} = geo;
+  const left = geo.borderW, right = geo.w-geo.borderW;
+  const top = geo.topBorder, bottom = geo.topBorder + rows*cell;
+  const zoneBottom = bottom + geo.finishDepth;
+  const segs = [[left,top,right,top]];
+  const fx0 = geo.cellLeft(finishCol), fx1 = fx0+cell;
+  if (fx0>left) segs.push([left,bottom,fx0,bottom]);
+  if (fx1<right) segs.push([fx1,bottom,right,bottom]);
+  segs.push([left,bottom,left,zoneBottom]);
+  segs.push([right,bottom,right,zoneBottom]);
+  segs.push([left,zoneBottom,right,zoneBottom]);
+  segs.push([left,top,left,bottom]);
+  segs.push([right,top,right,bottom]);
+  for(let r=0;r<rows;r++) for(let c=0;c<cols-1;c++)
+    if (!openRight[r][c]){ const x=geo.cellLeft(c+1); segs.push([x,geo.cellTop(r),x,geo.cellTop(r)+cell]); }
+  for(let r=0;r<rows-1;r++) for(let c=0;c<cols;c++)
+    if (!openDown[r][c]){ const y=geo.cellTop(r+1); segs.push([geo.cellLeft(c),y,geo.cellLeft(c)+cell,y]); }
+  return segs;
+}
+
+/* =========================================================================
+   Simulation — circle-body physics (collision is circle-based for numeric
+   robustness; racers are still drawn as rotated squares, with spin driven
+   by an angular-velocity approximation from tangential collision impulse,
+   for the same "reads as real hits" look as the video pipeline's square
+   pymunk bodies without needing full polygon collision in the browser).
+   ========================================================================= */
+const PHYSICS_HZ = 120;
+const DT = 1/PHYSICS_HZ;
+const ARENA_PRESETS = { s:{cols:6, rowsBase:12}, m:{cols:7, rowsBase:15}, l:{cols:8, rowsBase:19} };
+
+function buildRace(seed, roster, arenaSize){
+  const rng = makeRng(seed);
+  const preset = ARENA_PRESETS[arenaSize] || ARENA_PRESETS.m;
+  const n = roster.length;
+  const cols = preset.cols;
+  const rows = Math.max(10, Math.min(22, preset.rowsBase + Math.floor((n-6)/2)));
+
+  const mazeRng = makeRng((seed*2654435761) >>> 0);
+  const {openRight, openDown} = generateMaze(cols, rows, mazeRng);
+  addLoops(openRight, openDown, cols, rows, mazeRng, 0.12);
+  carveRooms(openRight, openDown, cols, rows, mazeRng);
+  const finishCol = mazeRng.int(cols);
+  const finishCell = [rows-1, finishCol];
+  const distField = bfsDistanceField(openRight, openDown, cols, rows, finishCell);
+
+  const stageW = 900; // logical px, canvas scales to container via devicePixelRatio
+  const geo = makeGeo(stageW, cols, rows);
+  const walls = buildWallSegments(geo, openRight, openDown, finishCol);
+  const [fzx, fzy] = geo.finishZoneCenter(finishCol);
+
+  const racers = roster.map((r,i)=>{
+    const sr = Math.floor(i/cols), sc = i%cols;
+    const [cx,cy] = geo.cellCenter(sr,sc);
+    const prng = makeRng((seed + i*97 + 13) >>> 0);
+    return {
+      ...r, idx:i,
+      x: cx + prng.range(-6,6), y: cy + prng.range(-6,6),
+      vx:0, vy:0, angle: prng.range(0, Math.PI*2), angularVel:0,
+      lastCell:[sr,sc], target:[cx,cy],
+      finished:false, active:true, finishStep:null,
+      recoveryUntil:0, rng:prng,
+      stuckCheckPos:null, stuckCounter:0,
+      progressLastDist:null, progressStall:0,
+    };
+  });
+
+  function recomputeTarget(rc){
+    const [r,c] = rc.lastCell;
+    if (r===finishCell[0] && c===finishCell[1]){ rc.target=[fzx,fzy]; return false; }
+    const cands = openNeighbors(r,c,openRight,openDown,cols,rows);
+    if (!cands.length) return false;
+    let best = Infinity;
+    for (const [nr,nc] of cands) if (distField[nr][nc]<best) best = distField[nr][nc];
+    const bestCands = cands.filter(([nr,nc])=>distField[nr][nc]===best);
+    let choice;
+    if (cands.length>1 && rc.rng.random()<rc.confusion) choice = cands[rc.rng.int(cands.length)];
+    else choice = bestCands[rc.rng.int(bestCands.length)];
+    rc.target = geo.cellCenter(choice[0], choice[1]);
+    return cands.length>1;
+  }
+  racers.forEach(recomputeTarget);
+
+  return {
+    seed, geo, walls, racers, finishCell, finishCol, fzx, fzy, cols, rows,
+    openRight, openDown, distField,
+    recomputeTarget,
+    step:0, winner:null, finishedCount:0, bumps:[],
+  };
+}
+
+const MAX_SPEED_FACTOR = 1/0.42;
+const STEER_GAIN = 7.5;
+const JITTER_HZ_SCALE = 3.0;
+const REPEL_RADIUS_CELLS = 1.6;
+const REPEL_STRENGTH = 1200.0;
+const RECOVERY_STEPS = Math.round(0.30*PHYSICS_HZ);
+const RECOVERY_MIN = 0.12;
+const JUNCTION_HESITATE_STEPS = Math.round(0.15*PHYSICS_HZ);
+const STUCK_CHECK_STEPS = Math.round(0.5*PHYSICS_HZ);
+const PROGRESS_CHECK_STEPS = Math.round(1.2*PHYSICS_HZ);
+
+function stepRace(race, tSec){
+  const {geo, racers, walls} = race;
+  race.step++;
+  const step = race.step;
+  const MAX_SPEED = geo.cell*MAX_SPEED_FACTOR;
+  const SLOWDOWN_RADIUS = geo.cell*0.55;
+  const REPEL_RADIUS = geo.cell*REPEL_RADIUS_CELLS;
+  const REPEL_GATE = MAX_SPEED*0.25;
+
+  const active = racers.filter(r=>r.active);
+  const repel = new Map(active.map(r=>[r,[0,0]]));
+  for(let a=0;a<active.length;a++) for(let b=a+1;b<active.length;b++){
+    const ra=active[a], rb=active[b];
+    const dx=ra.x-rb.x, dy=ra.y-rb.y;
+    const d=Math.hypot(dx,dy);
+    if (d>0 && d<REPEL_RADIUS){
+      const nx=dx/d, ny=dy/d;
+      const closing = -((ra.vx-rb.vx)*nx + (ra.vy-rb.vy)*ny);
+      if (closing>REPEL_GATE) continue;
+      const strength = REPEL_STRENGTH*(1-d/REPEL_RADIUS);
+      const fa = repel.get(ra), fb = repel.get(rb);
+      fa[0]+=nx*strength; fa[1]+=ny*strength;
+      fb[0]-=nx*strength; fb[1]-=ny*strength;
+    }
+  }
+
+  for (const rc of active){
+    const [rr,cc] = [
+      Math.min(race.rows-1, Math.max(0, Math.floor((rc.y-geo.topBorder)/geo.cell))),
+      Math.min(race.cols-1, Math.max(0, Math.floor((rc.x-geo.borderW)/geo.cell))),
+    ];
+    if ((rr!==rc.lastCell[0] || cc!==rc.lastCell[1]) && rc.y < geo.topBorder+race.rows*geo.cell){
+      rc.lastCell=[rr,cc];
+      if (race.recomputeTarget(rc)) rc.recoveryUntil = Math.max(rc.recoveryUntil, step+JUNCTION_HESITATE_STEPS);
+    }
+
+    const [tx,ty] = rc.target;
+    const dx=tx-rc.x, dy=ty-rc.y;
+    const dist = Math.hypot(dx,dy)||1;
+    const speedScale = Math.min(1, Math.max(0.35, dist/SLOWDOWN_RADIUS));
+    const speedMult = 1 + (1-rc.weight)*0.6;
+    const steerMult = 1 - (rc.weight-1)*0.5;
+    const desiredVx = dx/dist*MAX_SPEED*speedMult*speedScale;
+    const desiredVy = dy/dist*MAX_SPEED*speedMult*speedScale;
+    let steerGain = STEER_GAIN*steerMult;
+    if (step < rc.recoveryUntil){
+      const remaining = (rc.recoveryUntil-step)/RECOVERY_STEPS;
+      steerGain *= RECOVERY_MIN + (1-RECOVERY_MIN)*(1-remaining);
+    }
+    const steerX = (desiredVx-rc.vx)*steerGain;
+    const steerY = (desiredVy-rc.vy)*steerGain;
+    const jitterAng = Math.sin(tSec*JITTER_HZ_SCALE + rc.idx*1.7) * rc.rng.range(0.5,1.0);
+    const jitterMag = rc.weight*3.2;
+    const [rfx,rfy] = repel.get(rc);
+    const fx = rc.weight*steerX + Math.cos(jitterAng)*jitterMag + rfx*0.02;
+    const fy = rc.weight*steerY + Math.sin(jitterAng)*jitterMag + rfy*0.02;
+    rc.vx += fx*DT/rc.weight;
+    rc.vy += fy*DT/rc.weight;
+    rc.vx *= 0.996; rc.vy *= 0.996;
+  }
+
+  // integrate + wall collisions
+  for (const rc of active){
+    rc.x += rc.vx*DT; rc.y += rc.vy*DT;
+    for (const [x1,y1,x2,y2] of walls){
+      const wdx=x2-x1, wdy=y2-y1;
+      const len2 = wdx*wdx+wdy*wdy || 1;
+      let t = ((rc.x-x1)*wdx + (rc.y-y1)*wdy)/len2;
+      t = Math.max(0, Math.min(1, t));
+      const px = x1+t*wdx, py = y1+t*wdy;
+      const dx = rc.x-px, dy = rc.y-py;
+      const d = Math.hypot(dx,dy);
+      const minD = geo.racerRadius + geo.wallThickness/2;
+      if (d < minD && d>0.0001){
+        const nx=dx/d, ny=dy/d;
+        const overlap = minD-d;
+        rc.x += nx*overlap; rc.y += ny*overlap;
+        const vn = rc.vx*nx+rc.vy*ny;
+        if (vn<0){
+          rc.vx -= (1+0.42)*vn*nx;
+          rc.vy -= (1+0.42)*vn*ny;
+          const tangential = -rc.vx*ny+rc.vy*nx;
+          rc.angularVel += tangential*0.012;
+          if (Math.abs(vn)>1.2 && race.bumps.length<220)
+            race.bumps.push({x:rc.x,y:rc.y,born:tSec,kind:"wall",intensity:Math.min(1,Math.abs(vn)/260)});
+        }
+      }
+    }
+  }
+  // racer-racer collisions
+  for(let a=0;a<active.length;a++) for(let b=a+1;b<active.length;b++){
+    const ra=active[a], rb=active[b];
+    const dx=rb.x-ra.x, dy=rb.y-ra.y;
+    const d=Math.hypot(dx,dy);
+    const minD = geo.racerRadius*2*0.92;
+    if (d<minD && d>0.0001){
+      const nx=dx/d, ny=dy/d;
+      const overlap=(minD-d)/2;
+      ra.x-=nx*overlap; ra.y-=ny*overlap; rb.x+=nx*overlap; rb.y+=ny*overlap;
+      const rvx=rb.vx-ra.vx, rvy=rb.vy-ra.vy;
+      const velAlongNormal = rvx*nx+rvy*ny;
+      if (velAlongNormal<0){
+        const e=0.92;
+        const jImp = -(1+e)*velAlongNormal / (1/ra.weight+1/rb.weight);
+        const ix=jImp*nx, iy=jImp*ny;
+        ra.vx-=ix/ra.weight; ra.vy-=iy/ra.weight;
+        rb.vx+=ix/rb.weight; rb.vy+=iy/rb.weight;
+        const impulse = Math.abs(jImp);
+        ra.angularVel -= impulse*0.01/ra.weight;
+        rb.angularVel += impulse*0.01/rb.weight;
+        if (impulse>3 && race.bumps.length<220)
+          race.bumps.push({x:(ra.x+rb.x)/2,y:(ra.y+rb.y)/2,born:tSec,kind:"racer",intensity:Math.min(1,impulse/60)});
+        if (impulse>1.5){
+          const until = step+RECOVERY_STEPS;
+          ra.recoveryUntil=Math.max(ra.recoveryUntil,until);
+          rb.recoveryUntil=Math.max(rb.recoveryUntil,until);
+        }
+      }
+    }
+  }
+
+  for (const rc of active){
+    rc.angle += rc.angularVel*DT;
+    rc.angularVel *= 0.94;
+    const [fx,fy] = [race.fzx, race.fzy];
+    if (Math.hypot(rc.x-fx, rc.y-fy) < geo.cell*0.55){
+      rc.finished = true; rc.active = false; rc.finishStep = step;
+      race.finishedCount++;
+      if (!race.winner) race.winner = rc;
+    }
+  }
+
+  // stuck / progress-stall recovery
+  if (step % STUCK_CHECK_STEPS === 0){
+    for (const rc of racers){
+      if (!rc.active) continue;
+      const prev = rc.stuckCheckPos;
+      rc.stuckCheckPos = [rc.x, rc.y];
+      if (!prev) continue;
+      const moved = Math.hypot(rc.x-prev[0], rc.y-prev[1]);
+      if (moved < geo.racerRadius*0.7) rc.stuckCounter++; else rc.stuckCounter=0;
+      if (rc.stuckCounter>=3){
+        const [tx,ty]=rc.target;
+        const dx=tx-rc.x, dy=ty-rc.y, dd=Math.hypot(dx,dy)||1;
+        const nudge = MAX_SPEED*rc.weight*0.9;
+        rc.vx += dx/dd*nudge*0.02; rc.vy += dy/dd*nudge*0.02;
+        rc.recoveryUntil=0; rc.stuckCounter=0;
+      }
+    }
+  }
+  if (step % PROGRESS_CHECK_STEPS === 0){
+    for (const rc of racers){
+      if (!rc.active) continue;
+      const [r,c]=rc.lastCell;
+      const curDist = race.distField[r][c];
+      if (curDist==null) continue;
+      const prevDist = rc.progressLastDist;
+      rc.progressLastDist = curDist;
+      if (prevDist!=null && curDist>=prevDist) rc.progressStall++; else rc.progressStall=0;
+      if (rc.progressStall>=2){
+        const [tx,ty]=rc.target;
+        const dx=tx-rc.x, dy=ty-rc.y, dd=Math.hypot(dx,dy)||1;
+        const ndx=dx/dd, ndy=dy/dd;
+        const side = rc.rng.random()<0.5?-1:1;
+        const sdx=-ndy*side, sdy=ndx*side;
+        const nudge = MAX_SPEED*rc.weight*1.4;
+        rc.vx += (ndx*0.6+sdx*0.7)*nudge*0.02;
+        rc.vy += (ndy*0.6+sdy*0.7)*nudge*0.02;
+        rc.recoveryUntil=0; rc.progressStall=0;
+      }
+    }
+  }
+}
+
+/* =========================================================================
+   Rendering
+   ========================================================================= */
+function drawMazeBackground(ctx, race){
+  const {geo, walls, cols, rows} = race;
+  ctx.fillStyle = "#efe9d8";
+  ctx.fillRect(0,0,geo.w,geo.imgH);
+  // subtle cell grid tint
+  ctx.strokeStyle = "rgba(0,0,0,0.03)";
+  for(let c=1;c<cols;c++){ const x=geo.cellLeft(c); ctx.beginPath(); ctx.moveTo(x,geo.topBorder); ctx.lineTo(x,geo.topBorder+rows*geo.cell); ctx.stroke(); }
+  for(let r=1;r<rows;r++){ const y=geo.cellTop(r); ctx.beginPath(); ctx.moveTo(geo.borderW,y); ctx.lineTo(geo.w-geo.borderW,y); ctx.stroke(); }
+
+  // finish zone glow
+  const [fx,fy] = race.finishZoneArea || [0,0];
+  const fCol = race.finishCol;
+  const zx0 = geo.cellLeft(fCol), zy0 = geo.topBorder+rows*geo.cell;
+  const grad = ctx.createLinearGradient(0,zy0,0,zy0+geo.finishDepth);
+  grad.addColorStop(0,"rgba(48,209,88,0.28)");
+  grad.addColorStop(1,"rgba(48,209,88,0.05)");
+  ctx.fillStyle = grad;
+  ctx.fillRect(zx0, zy0, geo.cell, geo.finishDepth);
+  ctx.fillStyle = "#1c8a44";
+  ctx.font = `700 ${Math.round(geo.cell*0.30)}px ${getComputedStyle(document.body).fontFamily}`;
+  ctx.textAlign = "center"; ctx.textBaseline="middle";
+  ctx.fillText("FINISH", zx0+geo.cell/2, zy0+geo.finishDepth/2);
+
+  ctx.strokeStyle = "#2c2620";
+  ctx.lineCap = "round";
+  ctx.lineWidth = geo.wallThickness;
+  for (const [x1,y1,x2,y2] of walls){
+    ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke();
+  }
+}
+
+function drawRace(ctx, race, offscreen, tSec, youIdx){
+  const {geo} = race;
+  ctx.clearRect(0,0,geo.w,geo.imgH);
+  ctx.drawImage(offscreen,0,0);
+
+  for (const b of race.bumps){
+    const age = tSec-b.born;
+    if (age>0.35) continue;
+    const alpha = (1-age/0.35)*0.6*b.intensity;
+    ctx.beginPath();
+    ctx.fillStyle = b.kind==="wall" ? `rgba(255,159,10,${alpha})` : `rgba(255,69,58,${alpha})`;
+    ctx.arc(b.x,b.y, geo.racerRadius*(0.6+age*2.2), 0, Math.PI*2);
+    ctx.fill();
+  }
+  race.bumps = race.bumps.filter(b=>tSec-b.born<=0.35);
+
+  const s = geo.racerRadius*2.35;
+  for (const rc of race.racers){
+    if (!rc.active && !rc.finished) continue;
+    ctx.save();
+    ctx.translate(rc.x-s/2, rc.y-s/2);
+    ctx.shadowColor = "rgba(0,0,0,0.28)"; ctx.shadowBlur = 5; ctx.shadowOffsetY=2;
+    drawRacerFace(ctx, s, rc.color, rc.angle, rc.idx===youIdx);
+    ctx.restore();
+  }
+}
+
+/* =========================================================================
+   App / UI wiring
+   ========================================================================= */
+const state = {
+  screen:"menu",
+  youIdx: null,
+  fieldSize: 6,
+  arenaSize: "m",
+  race: null,
+  raf: null,
+  countdownActive:false,
+  raceStartAt:0,
+  lastTime:0,
+  accumulator:0,
+};
+
+function showScreen(name){
+  document.querySelectorAll(".screen").forEach(el=>el.classList.toggle("active", el.dataset.screen===name));
+  state.screen = name;
+  if (name!=="race" && state.raf){ cancelAnimationFrame(state.raf); state.raf=null; }
+}
+document.querySelectorAll("[data-nav]").forEach(el=>{
+  el.addEventListener("click", ()=>showScreen(el.dataset.nav));
+});
+document.getElementById("btn-play").addEventListener("click", ()=>{
+  buildRacerGrid();
+  showScreen("racer");
+});
+
+/* ---- racer select ---- */
+function buildRacerGrid(){
+  const grid = document.getElementById("racer-grid");
+  grid.innerHTML = "";
+  RACER_POOL.forEach((r,i)=>{
+    const card = document.createElement("div");
+    card.className = "racer-card" + (state.youIdx===i ? " selected" : "");
+    const cv = document.createElement("canvas");
+    cv.width = 88; cv.height = 88;
+    const ctx = cv.getContext("2d");
+    drawRacerFace(ctx, 88, r.color, 0, false);
+    const label = document.createElement("span");
+    label.textContent = r.name;
+    card.appendChild(cv); card.appendChild(label);
+    card.addEventListener("click", ()=>{
+      state.youIdx = i;
+      document.querySelectorAll(".racer-card").forEach(c=>c.classList.remove("selected"));
+      card.classList.add("selected");
+      document.getElementById("btn-racer-next").disabled = false;
+    });
+    grid.appendChild(card);
+  });
+}
+document.getElementById("btn-racer-next").addEventListener("click", ()=>showScreen("mode"));
+
+/* ---- mode / arena select ---- */
+document.getElementById("field-minus").addEventListener("click", ()=>{
+  state.fieldSize = Math.max(2, state.fieldSize-1);
+  document.getElementById("field-val").textContent = state.fieldSize;
+});
+document.getElementById("field-plus").addEventListener("click", ()=>{
+  state.fieldSize = Math.min(8, state.fieldSize+1);
+  document.getElementById("field-val").textContent = state.fieldSize;
+});
+document.getElementById("arena-choices").addEventListener("click", (e)=>{
+  const btn = e.target.closest("button"); if (!btn) return;
+  state.arenaSize = btn.dataset.size;
+  document.querySelectorAll("#arena-choices button").forEach(b=>b.classList.toggle("on", b===btn));
+});
+document.getElementById("btn-mode-next").addEventListener("click", ()=>{
+  showScreen("race");
+  startRace();
+});
+
+/* ---- race screen ---- */
+const canvas = document.getElementById("race-canvas");
+const cctx = canvas.getContext("2d");
+const winnerCanvas = document.getElementById("winner-swatch");
+
+function buildRoster(){
+  const pool = RACER_POOL.map((r,i)=>({...r, idx:i}));
+  const you = pool[state.youIdx];
+  const rest = pool.filter((_,i)=>i!==state.youIdx);
+  for (let i=rest.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [rest[i],rest[j]]=[rest[j],rest[i]]; }
+  const roster = [you, ...rest.slice(0, state.fieldSize-1)];
+  for (let i=roster.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [roster[i],roster[j]]=[roster[j],roster[i]]; }
+  return roster;
+}
+
+function startRace(){
+  const roster = buildRoster();
+  const youNewIdx = roster.findIndex(r=>r.idx===state.youIdx);
+  const seed = (Date.now() ^ Math.floor(Math.random()*1e9)) >>> 0;
+  const race = buildRace(seed, roster, state.arenaSize);
+  race.youIdx = youNewIdx;
+  state.race = race;
+
+  document.getElementById("finish-total").textContent = roster.length;
+  document.getElementById("finish-count").textContent = "0";
+  document.getElementById("winner-overlay").classList.remove("show");
+
+  const offscreen = document.createElement("canvas");
+  offscreen.width = race.geo.w; offscreen.height = race.geo.imgH;
+  drawMazeBackground(offscreen.getContext("2d"), race);
+  race.offscreen = offscreen;
+
+  fitCanvas(race);
+  window.addEventListener("resize", ()=>fitCanvas(state.race), {passive:true});
+
+  runCountdown(()=>{
+    state.lastTime = performance.now();
+    state.accumulator = 0;
+    state.raceStartAt = state.lastTime;
+    if (state.raf) cancelAnimationFrame(state.raf);
+    state.raf = requestAnimationFrame(loop);
+  });
+}
+
+function fitCanvas(race){
+  if (!race) return;
+  const stage = document.getElementById("race-stage");
+  const dpr = Math.min(2, window.devicePixelRatio||1);
+  const rect = stage.getBoundingClientRect();
+  const scale = Math.min(rect.width/race.geo.w, rect.height/race.geo.imgH);
+  const cssW = race.geo.w*scale, cssH = race.geo.imgH*scale;
+  canvas.style.width = cssW+"px"; canvas.style.height = cssH+"px";
+  canvas.width = race.geo.w*dpr; canvas.height = race.geo.imgH*dpr;
+  cctx.setTransform(dpr,0,0,dpr,0,0);
+}
+
+function runCountdown(done){
+  const el = document.getElementById("countdown");
+  el.style.display = "flex";
+  const seq = ["3","2","1","GO!"];
+  let i = 0;
+  el.textContent = seq[i];
+  const iv = setInterval(()=>{
+    i++;
+    if (i>=seq.length){ clearInterval(iv); el.style.display="none"; done(); return; }
+    el.textContent = seq[i];
+  }, 650);
+}
+
+function loop(now){
+  const race = state.race;
+  if (!race) return;
+  let dtReal = (now - state.lastTime)/1000;
+  state.lastTime = now;
+  dtReal = Math.min(dtReal, 0.05);
+  state.accumulator += dtReal;
+  const tSecBase = (now - state.raceStartAt)/1000;
+
+  while (state.accumulator >= DT){
+    stepRace(race, tSecBase - state.accumulator);
+    state.accumulator -= DT;
+    if (race.winner) break;
+  }
+
+  drawRace(cctx, race, race.offscreen, tSecBase, race.youIdx);
+  document.getElementById("finish-count").textContent = race.finishedCount;
+
+  if (race.winner && !state.countdownActive){
+    state.countdownActive = true;
+    setTimeout(()=>showWinner(race), 550);
+    return;
+  }
+  if (!race.winner) state.raf = requestAnimationFrame(loop);
+}
+
+function showWinner(race){
+  const w = race.winner;
+  document.getElementById("winner-name").textContent = (w.idx===race.youIdx ? "You — " : "") + w.name + " wins!";
+  document.getElementById("winner-sub").textContent = w.idx===race.youIdx
+    ? "Your racer reached the finish first."
+    : "Reached the finish first.";
+  const wc = winnerCanvas.getContext("2d");
+  winnerCanvas.width = 96; winnerCanvas.height = 96;
+  drawRacerFace(wc, 96, w.color, 0, w.idx===race.youIdx);
+  document.getElementById("winner-overlay").classList.add("show");
+  state.countdownActive = false;
+  if (state.raf){ cancelAnimationFrame(state.raf); state.raf=null; }
+}
+
+document.getElementById("btn-again").addEventListener("click", ()=>{
+  startRace();
+});
+document.getElementById("btn-newracer").addEventListener("click", ()=>{
+  buildRacerGrid();
+  showScreen("racer");
+});
+</script>
+</body>
+</html>
