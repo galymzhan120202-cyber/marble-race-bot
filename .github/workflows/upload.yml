@@ -44,6 +44,7 @@ jobs:
           TELEGRAM_NOTIFY_TOKEN=${{ secrets.MBALL_TELEGRAM_NOTIFY_TOKEN }}
           TELEGRAM_NOTIFY_CHAT_ID=${{ secrets.MBALL_TELEGRAM_NOTIFY_CHAT_ID }}
           MBALL_FUND_URL=${{ secrets.MBALL_FUND_URL }}
+          MBALL_GAME_URL=${{ secrets.MBALL_GAME_URL }}
           RACE_MIN_SECONDS=13
           RACE_MAX_SECONDS=28
           MUSIC_VOLUME=0.15

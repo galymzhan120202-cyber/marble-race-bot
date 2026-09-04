@@ -41,6 +41,9 @@ RETRY_DELAY = int(os.getenv('RETRY_DELAY', '2'))
 
 # Ko-fi tip link for video descriptions. Fill in once; empty = the line is omitted.
 FUND_URL = os.getenv('MBALL_FUND_URL', '')
+# Playable web-game link (GitHub Pages), same "Play it yourself" pattern as
+# weapon-ball-arena's upload/meta.js. Empty = the line is omitted.
+GAME_URL = os.getenv('MBALL_GAME_URL', '')
 RACE_MAX_SECONDS = int(os.getenv('RACE_MAX_SECONDS', '28'))
 RACE_MIN_SECONDS = int(os.getenv('RACE_MIN_SECONDS', '13'))
 
@@ -298,6 +301,8 @@ def get_recent_matchups(max_results=12):
 def upload_to_youtube(video_path, title, description, tags=None, thumbnail_path=None):
     logger.info("📤 YouTube-ке жүктеу басталуда...")
 
+    if GAME_URL:
+        description = f"{description}\n\n▶ Play it yourself: {GAME_URL}"
     if FUND_URL:
         description = f"{description}\n\n☕ Support the channel: {FUND_URL}"
 
