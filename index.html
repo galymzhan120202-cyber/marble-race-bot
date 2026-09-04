@@ -196,6 +196,7 @@
     background:rgba(255,255,255,0.04); color:var(--dim); font-family:inherit; font-weight:700; font-size:12.5px; cursor:pointer;
   }
   .arena-choices button.on{background:rgba(10,132,255,0.18); border-color:var(--accent); color:var(--white);}
+  #arena-choices-drop button{flex:1 1 calc(50% - 4px);}
 
   /* ---------- Race screen ---------- */
   #screen-race{padding-top:0;}
@@ -284,8 +285,8 @@
         <div class="emoji">🏁</div>
         <div class="txt"><h3>Maze Race</h3><p>Steer-yourself AI racers thread a procedural labyrinth. First to the finish wins.</p></div>
       </div>
+      <div class="mode-tile" data-mode="drop"><div class="emoji">🎯</div><div class="txt"><h3>Marble Drop</h3><p>Gravity, pegs, spinning blades. Pick an arena below.</p></div></div>
       <div class="mode-tile locked"><div class="emoji">⚔️</div><div class="txt"><h3>Battle Royale</h3><p>Pickups, eliminations, last one standing.</p></div><div class="badge-soon">SOON</div></div>
-      <div class="mode-tile locked"><div class="emoji">🎯</div><div class="txt"><h3>Marble Drop</h3><p>Gravity, pegs, spinning blades.</p></div><div class="badge-soon">SOON</div></div>
       <div class="mode-tile locked"><div class="emoji">🏆</div><div class="txt"><h3>Tournament</h3><p>Bracket knockouts across heats.</p></div><div class="badge-soon">SOON</div></div>
     </div>
 
@@ -300,12 +301,22 @@
       </div>
     </div>
 
-    <div class="arena-box card">
+    <div class="arena-box card" id="arena-box-race">
       <div class="field-label">Arena size</div>
       <div class="arena-choices" id="arena-choices">
         <button data-size="s">Compact</button>
         <button data-size="m" class="on">Standard</button>
         <button data-size="l">Sprawling</button>
+      </div>
+    </div>
+
+    <div class="arena-box card" id="arena-box-drop" hidden>
+      <div class="field-label">Arena layout</div>
+      <div class="arena-choices" id="arena-choices-drop" style="flex-wrap:wrap;">
+        <button data-arena="classic_plinko" class="on">🔴 Classic</button>
+        <button data-arena="chevron_funnel">⏳ Funnel</button>
+        <button data-arena="blade_storm">🌀 Blade Storm</button>
+        <button data-arena="narrows_chute">🚪 Narrows</button>
       </div>
     </div>
 
@@ -888,6 +899,226 @@ function drawRace(ctx, race, offscreen, tSec, youIdx){
 }
 
 /* =========================================================================
+   Drop mode — gravity + staggered peg field + spinning blades. Ported from
+   simulate_drop / _build_drop_pegs / _drop_peg_keep. Racer bodies are
+   treated as circles (same simplification as Race mode) colliding with
+   circular pegs and rotating blade segments.
+   ========================================================================= */
+const DROP_CANDY_COLORS = [
+  [255,105,180],[70,220,90],[60,220,235],[255,220,40],[255,140,30],[185,90,240],
+];
+const DROP_OBSTACLE_COLORS = [[255,140,30],[255,255,255],[185,90,240]];
+const DROP_ARENA_SPINNERS = {
+  classic_plinko: [[0.34,0.55],[0.63,0.55]],
+  chevron_funnel: [[0.50,0.30]],
+  blade_storm: [[0.20,0.50],[0.42,0.42],[0.64,0.50],[0.86,0.42]],
+  narrows_chute: [[0.55,0.34]],
+};
+const DROP_GRAVITY = 1600;
+const DROP_PEG_E = 0.88, DROP_RACER_E = 0.85, DROP_WALL_E = 0.8;
+
+function dropPegKeep(kind, rowI, x, cx, trackW, colSpacing, progress){
+  if (kind==="classic_plinko") return true;
+  if (kind==="blade_storm") return rowI%2===0;
+  if (kind==="chevron_funnel"){
+    const bandPeriod=8, phase=(rowI%bandPeriod)/bandPeriod;
+    const triangle=1-Math.abs(1-2*phase);
+    return Math.abs(x-cx) > trackW*(0.06+0.40*triangle);
+  }
+  if (kind==="narrows_chute"){
+    if (progress>0.85) return false;
+    const wallDist = trackW*(0.46-0.26*Math.min(1,progress));
+    return Math.abs(Math.abs(x-cx)-wallDist) < colSpacing*0.9;
+  }
+  return true;
+}
+function buildDropPegs(kind, rng, left, right, topY, finishY, h, racerRadius, pegRadius){
+  const trackW = right-left, cx=(left+right)/2;
+  const rowSpacing = racerRadius*5.5, colSpacing = racerRadius*5.0;
+  const yStart = topY+h*0.24, yEnd = finishY-h*0.14;
+  const pegs = [];
+  let y=yStart, rowI=0;
+  while (y<yEnd){
+    const progress = yEnd<=yStart ? 0 : (y-yStart)/(yEnd-yStart);
+    const offset = (rowI%2) ? colSpacing/2 : 0;
+    let x = left+pegRadius*2.2+offset;
+    while (x < right-pegRadius*2.2){
+      if (dropPegKeep(kind,rowI,x,cx,trackW,colSpacing,progress)){
+        pegs.push({
+          x: x+rng.range(-pegRadius*0.35,pegRadius*0.35),
+          y: y+rng.range(-pegRadius*0.35,pegRadius*0.35),
+          color: DROP_OBSTACLE_COLORS[pegs.length%DROP_OBSTACLE_COLORS.length],
+        });
+      }
+      x += colSpacing;
+    }
+    y += rowSpacing; rowI++;
+  }
+  return pegs;
+}
+function buildDrop(seed, roster, arenaKind){
+  const rng = makeRng(seed);
+  const n = roster.length;
+  const stageW = 560;
+  const left = stageW*0.06, right = stageW-stageW*0.06;
+  const trackW = right-left;
+  const racerRadius = trackW*0.042;
+  const pegRadius = racerRadius*0.5;
+  const h = 900;
+  const topY = h*0.16;
+  const trackH = h*3.4;
+  const finishY = topY+trackH;
+
+  const pegRng = makeRng((seed*40503+7)>>>0);
+  const pegs = buildDropPegs(arenaKind, pegRng, left, right, topY, finishY, h, racerRadius, pegRadius);
+  const blades = (DROP_ARENA_SPINNERS[arenaKind]||[]).map(([frac,lenFrac],bi)=>({
+    x:(left+right)/2, y: topY+trackH*frac, len: trackW*lenFrac,
+    angle:0, angularVel: (bi%2===0?1:-1)*pegRng.range(1.4,2.2),
+    color: DROP_OBSTACLE_COLORS[bi%DROP_OBSTACLE_COLORS.length],
+  }));
+
+  const candy = DROP_CANDY_COLORS.slice();
+  for (let i=candy.length-1;i>0;i--){ const j=rng.int(i+1); [candy[i],candy[j]]=[candy[j],candy[i]]; }
+
+  const spacing = trackW/(n+1);
+  const racers = roster.map((r,i)=>({
+    ...r, idx:i, color: candy[i%candy.length],
+    x: left+spacing*(i+1)+rng.range(-8,8), y: topY+rng.range(-6,6),
+    vx:0, vy:0, angle: rng.range(-0.3,0.3), angularVel:0,
+    finished:false, active:true,
+  }));
+
+  return {
+    seed, arenaKind, left, right, trackW, racerRadius, pegRadius, topY, trackH, finishY,
+    pegs, blades, racers, step:0, winner:null, finishedCount:0, bumps:[],
+    stageW, worldH: finishY + h*0.15, cameraY:0, viewportH: 820,
+  };
+}
+function stepDrop(drop, tSec){
+  drop.step++;
+  const {racers, pegs, blades, left, right, racerRadius, pegRadius, finishY} = drop;
+  for (const b of blades) b.angle += b.angularVel*DT;
+
+  for (const rc of racers){
+    if (!rc.active) continue;
+    rc.vy += DROP_GRAVITY*DT;
+    rc.vx *= 0.999; rc.vy *= 0.999;
+    rc.x += rc.vx*DT; rc.y += rc.vy*DT;
+
+    if (rc.x-racerRadius < left){ rc.x=left+racerRadius; rc.vx=Math.abs(rc.vx)*DROP_WALL_E; }
+    if (rc.x+racerRadius > right){ rc.x=right-racerRadius; rc.vx=-Math.abs(rc.vx)*DROP_WALL_E; }
+
+    for (const p of pegs){
+      const dx=rc.x-p.x, dy=rc.y-p.y, d=Math.hypot(dx,dy);
+      const minD = racerRadius+pegRadius;
+      if (d<minD && d>0.0001){
+        const nx=dx/d, ny=dy/d;
+        rc.x += nx*(minD-d); rc.y += ny*(minD-d);
+        const vn = rc.vx*nx+rc.vy*ny;
+        if (vn<0){
+          rc.vx -= (1+DROP_PEG_E)*vn*nx;
+          rc.vy -= (1+DROP_PEG_E)*vn*ny;
+          rc.angularVel += (-rc.vx*ny+rc.vy*nx)*0.01;
+          if (Math.abs(vn)>40 && drop.bumps.length<220)
+            drop.bumps.push({x:rc.x,y:rc.y,born:tSec,intensity:Math.min(1,Math.abs(vn)/500)});
+        }
+      }
+    }
+    for (const b of blades){
+      const hx=Math.cos(b.angle)*b.len/2, hy=Math.sin(b.angle)*b.len/2;
+      const x1=b.x-hx,y1=b.y-hy,x2=b.x+hx,y2=b.y+hy;
+      const wdx=x2-x1, wdy=y2-y1, len2=wdx*wdx+wdy*wdy||1;
+      let t=((rc.x-x1)*wdx+(rc.y-y1)*wdy)/len2; t=Math.max(0,Math.min(1,t));
+      const px=x1+t*wdx, py=y1+t*wdy;
+      const dx=rc.x-px, dy=rc.y-py, d=Math.hypot(dx,dy);
+      const minD = racerRadius+pegRadius*0.8;
+      if (d<minD && d>0.0001){
+        const nx=dx/d, ny=dy/d;
+        rc.x += nx*(minD-d); rc.y += ny*(minD-d);
+        const vn = Math.min(0, rc.vx*nx+rc.vy*ny);
+        rc.vx -= (1+DROP_PEG_E)*vn*nx;
+        rc.vy -= (1+DROP_PEG_E)*vn*ny;
+        rc.angularVel += 6;
+        if (drop.bumps.length<220) drop.bumps.push({x:rc.x,y:rc.y,born:tSec,intensity:0.8});
+      }
+    }
+  }
+  for (let a=0;a<racers.length;a++) for (let b2=a+1;b2<racers.length;b2++){
+    const ra=racers[a], rb=racers[b2];
+    if (!ra.active||!rb.active) continue;
+    const dx=rb.x-ra.x, dy=rb.y-ra.y, d=Math.hypot(dx,dy);
+    const minD = racerRadius*2*0.92;
+    if (d<minD && d>0.0001){
+      const nx=dx/d, ny=dy/d, overlap=(minD-d)/2;
+      ra.x-=nx*overlap; ra.y-=ny*overlap; rb.x+=nx*overlap; rb.y+=ny*overlap;
+      const rvx=rb.vx-ra.vx, rvy=rb.vy-ra.vy, van=rvx*nx+rvy*ny;
+      if (van<0){
+        const jImp=-(1+DROP_RACER_E)*van/(1/ra.weight+1/rb.weight);
+        const ix=jImp*nx, iy=jImp*ny;
+        ra.vx-=ix/ra.weight; ra.vy-=iy/ra.weight;
+        rb.vx+=ix/rb.weight; rb.vy+=iy/rb.weight;
+      }
+    }
+  }
+  for (const rc of racers){
+    rc.angle += rc.angularVel*DT; rc.angularVel *= 0.95;
+    if (rc.active && rc.y+racerRadius >= finishY){
+      rc.active=false; rc.finished=true; drop.finishedCount++;
+      if (!drop.winner) drop.winner = rc;
+    }
+  }
+  const activeR = racers.filter(r=>r.active);
+  const pool = activeR.length ? activeR : racers;
+  const leaderY = pool.reduce((m,r)=>Math.max(m,r.y), drop.topY);
+  let camTarget = leaderY - drop.viewportH*0.42;
+  camTarget = Math.max(0, Math.min(Math.max(0,drop.worldH-drop.viewportH), camTarget));
+  drop.cameraY += (camTarget-drop.cameraY)*0.08;
+}
+function drawDropBackground(ctx, drop){
+  const {stageW, worldH, left, right, pegs, finishY, pegRadius} = drop;
+  const grad = ctx.createLinearGradient(0,0,0,worldH);
+  grad.addColorStop(0,"rgb(110,205,248)"); grad.addColorStop(1,"rgb(60,140,205)");
+  ctx.fillStyle=grad; ctx.fillRect(0,0,stageW,worldH);
+  ctx.strokeStyle="rgba(255,255,255,0.55)"; ctx.lineWidth=6;
+  ctx.beginPath(); ctx.moveTo(left,0); ctx.lineTo(left,worldH); ctx.moveTo(right,0); ctx.lineTo(right,worldH); ctx.stroke();
+  for (const p of pegs){
+    ctx.beginPath(); ctx.arc(p.x,p.y,pegRadius,0,Math.PI*2);
+    ctx.fillStyle=rgb(p.color); ctx.fill();
+    ctx.strokeStyle="rgba(0,0,0,0.25)"; ctx.lineWidth=1; ctx.stroke();
+  }
+  ctx.fillStyle="rgba(255,255,255,0.95)"; ctx.fillRect(left,finishY-3,right-left,6);
+  ctx.fillStyle="#083352"; ctx.font="700 20px sans-serif"; ctx.textAlign="center";
+  ctx.fillText("FINISH", (left+right)/2, finishY+28);
+}
+function drawDrop(ctx, drop, offscreen, tSec, youIdx){
+  const {stageW, viewportH, cameraY} = drop;
+  ctx.clearRect(0,0,stageW,viewportH);
+  ctx.drawImage(offscreen, 0, cameraY, stageW, viewportH, 0, 0, stageW, viewportH);
+  ctx.save();
+  ctx.translate(0,-cameraY);
+  for (const b of drop.blades){
+    const hx=Math.cos(b.angle)*b.len/2, hy=Math.sin(b.angle)*b.len/2;
+    ctx.strokeStyle=rgb(b.color); ctx.lineWidth=drop.pegRadius*1.6; ctx.lineCap="round";
+    ctx.beginPath(); ctx.moveTo(b.x-hx,b.y-hy); ctx.lineTo(b.x+hx,b.y+hy); ctx.stroke();
+    ctx.beginPath(); ctx.arc(b.x,b.y,drop.pegRadius*0.9,0,Math.PI*2); ctx.fillStyle="#22252b"; ctx.fill();
+  }
+  for (const bmp of drop.bumps){
+    const age=tSec-bmp.born; if (age>0.3) continue;
+    ctx.beginPath(); ctx.fillStyle=`rgba(255,255,255,${(1-age/0.3)*0.5*bmp.intensity})`;
+    ctx.arc(bmp.x,bmp.y,drop.racerRadius*(0.6+age*2),0,Math.PI*2); ctx.fill();
+  }
+  drop.bumps = drop.bumps.filter(b=>tSec-b.born<=0.3);
+  const s = drop.racerRadius*2.3;
+  for (const rc of drop.racers){
+    ctx.save(); ctx.translate(rc.x-s/2, rc.y-s/2);
+    ctx.shadowColor="rgba(0,0,0,0.28)"; ctx.shadowBlur=5; ctx.shadowOffsetY=2;
+    drawRacerFace(ctx, s, rc.color, rc.angle, rc.idx===youIdx);
+    ctx.restore();
+  }
+  ctx.restore();
+}
+
+/* =========================================================================
    App / UI wiring
    ========================================================================= */
 const state = {
@@ -895,12 +1126,18 @@ const state = {
   youIdx: null,
   fieldSize: 6,
   arenaSize: "m",
-  race: null,
+  mode: "race",
+  dropArena: "classic_plinko",
+  sim: null,
   raf: null,
   countdownActive:false,
   raceStartAt:0,
   lastTime:0,
   accumulator:0,
+};
+const SIM_KINDS = {
+  race: {step:stepRace, draw:drawRace, size:(s)=>[s.geo.w, s.geo.imgH]},
+  drop: {step:stepDrop, draw:drawDrop, size:(s)=>[s.stageW, s.viewportH]},
 };
 
 function showScreen(name){
@@ -955,9 +1192,22 @@ document.getElementById("arena-choices").addEventListener("click", (e)=>{
   state.arenaSize = btn.dataset.size;
   document.querySelectorAll("#arena-choices button").forEach(b=>b.classList.toggle("on", b===btn));
 });
+document.getElementById("arena-choices-drop").addEventListener("click", (e)=>{
+  const btn = e.target.closest("button"); if (!btn) return;
+  state.dropArena = btn.dataset.arena;
+  document.querySelectorAll("#arena-choices-drop button").forEach(b=>b.classList.toggle("on", b===btn));
+});
+document.querySelectorAll(".mode-tile[data-mode]").forEach(tile=>{
+  tile.addEventListener("click", ()=>{
+    state.mode = tile.dataset.mode;
+    document.querySelectorAll(".mode-tile[data-mode]").forEach(t=>t.classList.toggle("selected", t===tile));
+    document.getElementById("arena-box-race").hidden = state.mode!=="race";
+    document.getElementById("arena-box-drop").hidden = state.mode!=="drop";
+  });
+});
 document.getElementById("btn-mode-next").addEventListener("click", ()=>{
   showScreen("race");
-  startRace();
+  startSim();
 });
 
 /* ---- race screen ---- */
@@ -975,25 +1225,35 @@ function buildRoster(){
   return roster;
 }
 
-function startRace(){
+function startSim(){
   const roster = buildRoster();
   const youNewIdx = roster.findIndex(r=>r.idx===state.youIdx);
   const seed = (Date.now() ^ Math.floor(Math.random()*1e9)) >>> 0;
-  const race = buildRace(seed, roster, state.arenaSize);
-  race.youIdx = youNewIdx;
-  state.race = race;
+
+  let sim;
+  if (state.mode==="drop"){
+    sim = buildDrop(seed, roster, state.dropArena);
+    const offscreen = document.createElement("canvas");
+    offscreen.width = sim.stageW; offscreen.height = sim.worldH;
+    drawDropBackground(offscreen.getContext("2d"), sim);
+    sim.offscreen = offscreen;
+  } else {
+    sim = buildRace(seed, roster, state.arenaSize);
+    const offscreen = document.createElement("canvas");
+    offscreen.width = sim.geo.w; offscreen.height = sim.geo.imgH;
+    drawMazeBackground(offscreen.getContext("2d"), sim);
+    sim.offscreen = offscreen;
+  }
+  sim.youIdx = youNewIdx;
+  sim.kind = state.mode;
+  state.sim = sim;
 
   document.getElementById("finish-total").textContent = roster.length;
   document.getElementById("finish-count").textContent = "0";
   document.getElementById("winner-overlay").classList.remove("show");
 
-  const offscreen = document.createElement("canvas");
-  offscreen.width = race.geo.w; offscreen.height = race.geo.imgH;
-  drawMazeBackground(offscreen.getContext("2d"), race);
-  race.offscreen = offscreen;
-
-  fitCanvas(race);
-  window.addEventListener("resize", ()=>fitCanvas(state.race), {passive:true});
+  fitCanvas(sim);
+  window.addEventListener("resize", ()=>fitCanvas(state.sim), {passive:true});
 
   runCountdown(()=>{
     state.lastTime = performance.now();
@@ -1004,15 +1264,16 @@ function startRace(){
   });
 }
 
-function fitCanvas(race){
-  if (!race) return;
+function fitCanvas(sim){
+  if (!sim) return;
+  const [w, h] = SIM_KINDS[sim.kind].size(sim);
   const stage = document.getElementById("race-stage");
   const dpr = Math.min(2, window.devicePixelRatio||1);
   const rect = stage.getBoundingClientRect();
-  const scale = Math.min(rect.width/race.geo.w, rect.height/race.geo.imgH);
-  const cssW = race.geo.w*scale, cssH = race.geo.imgH*scale;
+  const scale = Math.min(rect.width/w, rect.height/h);
+  const cssW = w*scale, cssH = h*scale;
   canvas.style.width = cssW+"px"; canvas.style.height = cssH+"px";
-  canvas.width = race.geo.w*dpr; canvas.height = race.geo.imgH*dpr;
+  canvas.width = w*dpr; canvas.height = h*dpr;
   cctx.setTransform(dpr,0,0,dpr,0,0);
 }
 
@@ -1030,8 +1291,9 @@ function runCountdown(done){
 }
 
 function loop(now){
-  const race = state.race;
-  if (!race) return;
+  const sim = state.sim;
+  if (!sim) return;
+  const kind = SIM_KINDS[sim.kind];
   let dtReal = (now - state.lastTime)/1000;
   state.lastTime = now;
   dtReal = Math.min(dtReal, 0.05);
@@ -1039,38 +1301,38 @@ function loop(now){
   const tSecBase = (now - state.raceStartAt)/1000;
 
   while (state.accumulator >= DT){
-    stepRace(race, tSecBase - state.accumulator);
+    kind.step(sim, tSecBase - state.accumulator);
     state.accumulator -= DT;
-    if (race.winner) break;
+    if (sim.winner) break;
   }
 
-  drawRace(cctx, race, race.offscreen, tSecBase, race.youIdx);
-  document.getElementById("finish-count").textContent = race.finishedCount;
+  kind.draw(cctx, sim, sim.offscreen, tSecBase, sim.youIdx);
+  document.getElementById("finish-count").textContent = sim.finishedCount;
 
-  if (race.winner && !state.countdownActive){
+  if (sim.winner && !state.countdownActive){
     state.countdownActive = true;
-    setTimeout(()=>showWinner(race), 550);
+    setTimeout(()=>showWinner(sim), 550);
     return;
   }
-  if (!race.winner) state.raf = requestAnimationFrame(loop);
+  if (!sim.winner) state.raf = requestAnimationFrame(loop);
 }
 
-function showWinner(race){
-  const w = race.winner;
-  document.getElementById("winner-name").textContent = (w.idx===race.youIdx ? "You — " : "") + w.name + " wins!";
-  document.getElementById("winner-sub").textContent = w.idx===race.youIdx
+function showWinner(sim){
+  const w = sim.winner;
+  document.getElementById("winner-name").textContent = (w.idx===sim.youIdx ? "You — " : "") + w.name + " wins!";
+  document.getElementById("winner-sub").textContent = w.idx===sim.youIdx
     ? "Your racer reached the finish first."
     : "Reached the finish first.";
   const wc = winnerCanvas.getContext("2d");
   winnerCanvas.width = 96; winnerCanvas.height = 96;
-  drawRacerFace(wc, 96, w.color, 0, w.idx===race.youIdx);
+  drawRacerFace(wc, 96, w.color, 0, w.idx===sim.youIdx);
   document.getElementById("winner-overlay").classList.add("show");
   state.countdownActive = false;
   if (state.raf){ cancelAnimationFrame(state.raf); state.raf=null; }
 }
 
 document.getElementById("btn-again").addEventListener("click", ()=>{
-  startRace();
+  startSim();
 });
 document.getElementById("btn-newracer").addEventListener("click", ()=>{
   buildRacerGrid();
