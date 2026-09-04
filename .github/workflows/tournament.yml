@@ -48,6 +48,7 @@ jobs:
           cat > .env << 'EOF'
           TELEGRAM_NOTIFY_TOKEN=${{ secrets.MBALL_TELEGRAM_NOTIFY_TOKEN }}
           TELEGRAM_NOTIFY_CHAT_ID=${{ secrets.MBALL_TELEGRAM_NOTIFY_CHAT_ID }}
+          MBALL_FUND_URL=${{ secrets.MBALL_FUND_URL }}
           MUSIC_VOLUME=0.15
           SFX_VOLUME=0.9
           YOUTUBE_CATEGORY_ID=20
