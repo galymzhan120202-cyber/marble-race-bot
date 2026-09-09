@@ -1251,6 +1251,7 @@ BATTLE_ZONE_SHRINK_START_FRAC = 0.15  # of max_seconds: the closing walls start 
 BATTLE_ZONE_SHRINK_END_FRAC = 0.85  # walls reach their final (minimum) position
 BATTLE_ZONE_MIN_HALF_WIDTH_CELLS = 1.5  # how narrow the left/right walls can close to
 BATTLE_ZONE_END_MARGIN_ROWS = 2  # rows of headroom always left above the finish
+BATTLE_STORM_KILL_SECONDS = 2.5  # continuous time outside the safe funnel that's fatal
 
 
 def _place_pickups(open_right, open_down, cols, rows, rng, k):
@@ -1289,9 +1290,15 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=32, min_seconds=14, n_racers
     a static center. Weapon pickups let an armed racer THROW an unarmed one
     on collision (a strong knockback impulse, not a damage tick); slamming
     into any wall while still airborne from a throw is what actually
-    eliminates a racer. First to the finish wins outright; if nobody makes
-    it, the last racer standing (or closest to the finish, on a time-out)
-    does."""
+    eliminates a racer. A racer stuck on the wrong side of the zone for too
+    long (BATTLE_STORM_KILL_SECONDS) is also eliminated outright — a ported
+    version of weapon-ball-arena's "storm" chip damage, needed because the
+    closing wall stops moving once it reaches its final position, and
+    being a full-width solid barrier it can never be walked around, so
+    without this a straggler caught behind it at that point was stuck
+    there permanently (see the outside_zone_steps check below). First to
+    the finish wins outright; if nobody makes it, the last racer standing
+    (or closest to the finish, on a time-out) does."""
     rng = random.Random(seed)
     theme = pick_theme(seed)
 
@@ -1444,6 +1451,8 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=32, min_seconds=14, n_racers
     eliminated = [False] * n_racers
     active = [True] * n_racers
     flying_until = [0] * n_racers
+    outside_zone_steps = [0] * n_racers
+    BATTLE_STORM_KILL_STEPS = int(BATTLE_STORM_KILL_SECONDS * PHYSICS_HZ)
     last_cell = [(i // cols, i % cols) for i in range(n_racers)]
     target = [geo.cell_center(*last_cell[i]) for i in range(n_racers)]
     winner_idx_box = [None]
@@ -1721,6 +1730,22 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=32, min_seconds=14, n_racers
             outside_zone = x < s_left or x > s_right or y < top_y
             if outside_zone:
                 _battle_recompute_target(i)
+                outside_zone_steps[i] += 1
+                if outside_zone_steps[i] >= BATTLE_STORM_KILL_STEPS:
+                    # Storm kill (ported concept from weapon-ball-arena's
+                    # shrinking-arena "storm" chip damage): the sweeping
+                    # wall carries a caught racer along, but once it
+                    # finishes closing and stops, nothing pushes a
+                    # straggler the rest of the way — it's a full-width
+                    # solid barrier with no gap, so being stuck behind it
+                    # was a permanent, unresolved state (batch-confirmed:
+                    # ~9% of battles timed out with everyone alive, frozen
+                    # just behind the halted wall). A continuous-time-outside
+                    # timer guarantees the match always resolves.
+                    _eliminate(i, step_counter["n"])
+                    continue
+            else:
+                outside_zone_steps[i] = 0
             tx, ty = target[i]
             dx, dy = tx - x, ty - y
             dist = math.hypot(dx, dy) or 1.0
