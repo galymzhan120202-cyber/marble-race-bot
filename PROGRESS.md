@@ -421,6 +421,36 @@ selected per video, instead of always the same fixed Plinko field.
       `build_drop_clip`/`drop_gen.py` so far, kept for future
       title/description/debugging use).
 
+## Battle mode: fixed zone racers getting permanently stuck (2026-09-10)
+
+User asked to review how `weapon-ball-arena` (a sibling repo) implements
+its shrinking-arena "zone", to understand it and check ours for bugs.
+That repo's zone is a concentric circle that shrinks uniformly, backed
+by continuous "storm" chip damage (`f.hp -= 9*dt`) for anyone outside
+it — being outside is never a stable state, it either forces escape or
+death, guaranteeing every fight resolves.
+
+- [x] Batch-audited 120 then 300 `simulate_battle` seeds and found ~9%
+      ended with **everyone alive**, no finish, no elimination — a
+      "nothing happened" timeout. Traced the trajectory of a failing
+      seed frame-by-frame: racers track closely just behind the closing
+      top wall the whole match (correctly carried along by its motion),
+      but once the wall reaches `BATTLE_ZONE_SHRINK_END_FRAC` and stops
+      moving, any racer still on the wrong side is frozen there for the
+      rest of the match — the wall is a full-width solid segment with
+      no gap, so there is nothing left to carry a straggler through and
+      no way to walk around it.
+- [x] Fix (`race_sim.py`, `simulate_battle`): ported the weapon-ball-arena
+      "storm" concept — track `outside_zone_steps` per racer, and once a
+      racer has spent `BATTLE_STORM_KILL_SECONDS` (2.5s) continuously
+      outside the safe funnel, eliminate them outright via the existing
+      `_eliminate()` path. Guarantees resolution regardless of maze
+      layout or AI edge cases, instead of depending solely on the wall's
+      own sweep to always catch everyone in time.
+- [x] Re-audited: "nothing happened" 9.2% -> 0.0% (300 seeds, 0 errors),
+      avg finishes per sim unchanged (~1.6-1.7) — the fix only resolves
+      the previously-stuck cases, doesn't change normal outcomes.
+
 ## Still to do
 
 - [ ] Do a real (confirmed, explicit) first upload test — either manually
