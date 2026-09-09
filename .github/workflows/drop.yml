@@ -25,6 +25,7 @@ jobs:
 
       - name: FFmpeg орнату
         run: |
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list
           sudo apt-get update -qq
           sudo apt-get install -y ffmpeg fonts-dejavu
 
