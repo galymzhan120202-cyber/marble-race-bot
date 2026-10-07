@@ -265,7 +265,7 @@ def render_bracket_board(bracket, theme, caption, w=TOUR_WIDTH, h=TOUR_HEIGHT):
 
 # --- Heat execution ---------------------------------------------------
 
-def _run_heat(seed, heat_racers, theme_seed, qualifiers=2, enforce_quality=True):
+def _run_heat(seed, heat_racers, theme_seed, qualifiers=2, enforce_quality=True, heat_title=None):
     needed = min(qualifiers, len(heat_racers))
     race = generate_playable(lambda **kw: simulate_race(required_finishers=needed, **kw),
         w=TOUR_WIDTH, h=TOUR_HEIGHT, seed=seed, fps=TOUR_FPS,
@@ -274,6 +274,8 @@ def _run_heat(seed, heat_racers, theme_seed, qualifiers=2, enforce_quality=True)
         rows=TOUR_ROWS, enforce_quality=enforce_quality,
     )
     race['qualifier_count'] = needed
+    if heat_title:
+        race['heat_title'] = heat_title
     clip = build_race_clip(race)
     sfx_array, sfx_sr = build_sfx_array(race)
     sfx_clip = AudioArrayClip(sfx_array, fps=sfx_sr).subclipped(0, clip.duration)
@@ -323,7 +325,8 @@ def generate_tournament_video(skip_upload: bool = False):
             _append(_static_clip(
                 render_heat_card("ROUND OF 16", f"Heat {hi + 1} of 4", group, theme), HEAT_CARD_SECONDS))
             heat_seed = seed * 1000 + 100 + hi
-            race, clip = _run_heat(heat_seed, group, seed, enforce_quality=not skip_upload)
+            race, clip = _run_heat(heat_seed, group, seed, enforce_quality=not skip_upload,
+                                   heat_title=f"ROUND OF 16 / HEAT {hi+1} OF 4")
             if opening_race is None:
                 opening_race = race
             _append(clip, race_bump_times(race))
@@ -342,7 +345,8 @@ def generate_tournament_video(skip_upload: bool = False):
             _append(_static_clip(
                 render_heat_card("ROUND OF 8", f"Heat {hi + 1} of 2", group, theme), HEAT_CARD_SECONDS))
             heat_seed = seed * 1000 + 200 + hi
-            race, clip = _run_heat(heat_seed, group, seed, enforce_quality=not skip_upload)
+            race, clip = _run_heat(heat_seed, group, seed, enforce_quality=not skip_upload,
+                                   heat_title=f"SEMIFINAL / HEAT {hi+1} OF 2")
             _append(clip, race_bump_times(race))
             top2 = race["full_ranking"][:2]
             bracket["round2"][hi] = {"racers": group, "advancing_idx": top2}
@@ -356,7 +360,8 @@ def generate_tournament_video(skip_upload: bool = False):
         final_group = qf_advancers[0] + qf_advancers[1]
         _append(_static_clip(render_heat_card("FINAL", "Championship Heat", final_group, theme), HEAT_CARD_SECONDS))
         heat_seed = seed * 1000 + 300
-        race, clip = _run_heat(heat_seed, final_group, seed, qualifiers=1, enforce_quality=not skip_upload)
+        race, clip = _run_heat(heat_seed, final_group, seed, qualifiers=1, enforce_quality=not skip_upload,
+                               heat_title="FINAL / CHAMPIONSHIP HEAT")
         _append(clip, race_bump_times(race))
         champion_idx = race["full_ranking"][0]
         champion = final_group[champion_idx]

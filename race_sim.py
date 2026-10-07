@@ -913,7 +913,10 @@ def simulate_race(w, h, seed, fps=24, max_seconds=28, min_seconds=13, n_racers=N
             weights = list(N_RACERS_WEIGHTS.values())
             n_racers = rng.choices(options, weights=weights, k=1)[0]
         racers = [dict(r) for r in rng.sample(RACER_POOL, n_racers)]
-    _boost_color_contrast(racers, rng)
+    # An explicit roster (e.g. a tournament bracket) already owns its
+    # palette. Recolouring a character in each heat breaks visual identity.
+    if forced_racers is None:
+        _boost_color_contrast(racers, rng)
 
     border_w_est = w * 0.045
     cols = cols if cols is not None else max(4, round((w - 2 * border_w_est) / TARGET_CELL_PX))
@@ -1447,7 +1450,8 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=32, min_seconds=14, n_racers
             weights = list(N_RACERS_WEIGHTS.values())
             n_racers = rng.choices(options, weights=weights, k=1)[0]
         racers = [dict(r) for r in rng.sample(RACER_POOL, n_racers)]
-    _boost_color_contrast(racers, rng)
+    if forced_racers is None:
+        _boost_color_contrast(racers, rng)
 
     border_w_est = w * 0.045
     cols = cols if cols is not None else max(4, round((w - 2 * border_w_est) / TARGET_CELL_PX))
@@ -2402,9 +2406,8 @@ def build_drop_clip(race):
     viewport_h = h - HUD_MARGIN
 
     camera_tops = _camera_positions(race, track_img_h, viewport_h, average=False)
+    views = _presentation_states(race, camera_tops, viewport_h)
     accent = (80, 198, 246)
-
-    finish_pop_font = get_font(int(h * 0.020))
 
     ambient_particles = _make_ambient_particles(race["seed"], 14, w, h)
 
@@ -2477,20 +2480,6 @@ def build_drop_clip(race):
                     color = (255, 220, 120) if kind == "wall" else (255, 255, 255)
                     d.ellipse([bx - rr, ry - rr, bx + rr, ry + rr], outline=(*color, a), width=3)
 
-            for fi in range(max(0, idx - 20), idx + 1):
-                if fi not in race["finish_frame_flags"]:
-                    continue
-                age = idx - fi
-                if age > 24:
-                    continue
-                pa = max(0, int(255 * (1 - age / 24.0)))
-                for (ridx, fx, fy) in race["finish_frame_flags"][fi]:
-                    ry = fy - crop_top + HUD_MARGIN - age * 1.5
-                    label = f"{racers[ridx]['name']} FINISHED!"
-                    lw = d.textlength(label, font=finish_pop_font)
-                    d.text((fx - lw / 2, ry), label, font=finish_pop_font, fill=(255, 255, 255, pa),
-                           stroke_width=2, stroke_fill=(0, 0, 0, pa))
-
         for i in range(n):
             pos = st["pos"][i]
             if pos is None:
@@ -2502,7 +2491,9 @@ def build_drop_clip(race):
             icon = icons[i].rotate(ang, resample=Image.BICUBIC)
             img.alpha_composite(icon, (int(x - icon.width / 2), int(ry - icon.height / 2)))
 
-        _draw_video_hud(img, race, st, "MARBLE DROP", accent, in_intro, idx >= finale_start and not in_intro)
+        if not in_intro:
+            _draw_race_events(img, race, idx, crop_top, HUD_MARGIN, views[idx])
+        _draw_video_hud(img, race, st, "MARBLE DROP", accent, in_intro, idx >= finale_start and not in_intro, views[idx])
         if in_intro:
             _draw_countdown(img, t, accent)
         elif idx >= finale_start:
@@ -2551,11 +2542,14 @@ def _camera_positions(race, world_h, viewport_h, lead_frac=0.36, average=False):
     """Follow visible action, then hold the finish when its body disappears."""
     tops, previous = [], None
     finish_y = None
+    finishers = set()
+    required = race.get("qualifier_count", 1)
     smoothing = 1 - (1 - 0.06) ** (60 / race["fps"])
     for idx, frame in enumerate(race["frames"]):
         events = race.get("finish_frame_flags", {}).get(idx, [])
-        if events and finish_y is None:
-            finish_y = events[0][2]
+        finishers.update(event[0] for event in events)
+        if events and finish_y is None and len(finishers) >= required:
+            finish_y = events[-1][2]
         points = [p[1] for p in frame["pos"] if p is not None]
         lead = (sum(points) / len(points) if average else max(points)) if points else previous
         if average and points and max(points) - min(points) > viewport_h * .7:
@@ -2573,9 +2567,11 @@ def _camera_positions(race, world_h, viewport_h, lead_frac=0.36, average=False):
             lead = 0.0
         previous = lead if previous is None else previous + smoothing * (lead - previous)
         top = max(0.0, min(previous - viewport_h * lead_frac, max(0.0, world_h - viewport_h)))
-        if points and finish_y is None and not any(top <= y <= top + viewport_h for y in points):
-            # Reframe immediately if the followed group was eliminated.
-            previous = min(points, key=lambda y: abs(y-previous))
+        focus = points if finish_y is None else [finish_y]
+        if focus and not any(top <= y <= top + viewport_h for y in focus):
+            # Reframe if a followed group disappears or a deciding finish
+            # would otherwise happen outside the camera's current view.
+            previous = min(focus, key=lambda y: abs(y-previous))
             top = max(0.0, min(previous - viewport_h * lead_frac, max(0.0, world_h - viewport_h)))
         tops.append(top)
     return tops
@@ -2585,12 +2581,87 @@ def _video_hud_height(w, h):
     return int(h * (.16 if h >= w else .20))
 
 
+def _presentation_states(race, camera_tops, viewport_h):
+    """Build frame-local places and visibility, using only events so far."""
+    places = [None] * race["n_racers"]
+    count = 0
+    states = []
+    radius = race["geo"].racer_radius if "geo" in race else race.get("racer_radius", 0)
+    for fi, (frame, top) in enumerate(zip(race["frames"], camera_tops)):
+        for racer_idx, _, _ in race.get("finish_frame_flags", {}).get(fi, []):
+            if places[racer_idx] is None:
+                count += 1
+                places[racer_idx] = count
+        directions = []
+        for active, position in zip(frame["active"], frame["pos"]):
+            if not active or position is None:
+                directions.append(None)
+            elif position[1] + radius < top:
+                directions.append("above")
+            elif position[1] - radius > top + viewport_h:
+                directions.append("below")
+            else:
+                directions.append(None)
+        states.append({"places": tuple(places), "directions": tuple(directions)})
+    return states
+
+
+def _draw_race_events(img, race, idx, camera_top, hud_height, view):
+    """Readable event labels with the same lifetime at every rendering FPS."""
+    lifetime = .85
+    fps = race["fps"]
+    events = []
+    for kind, key in (("finish", "finish_frame_flags"), ("out", "elim_frame_flags")):
+        for fi in range(max(0, idx-math.ceil(lifetime*fps)), idx+1):
+            age = (idx-fi)/fps
+            if age >= lifetime:
+                continue
+            for racer_idx, x, y in race.get(key, {}).get(fi, []):
+                events.append((fi, kind, racer_idx, x, y, age))
+    if not events:
+        return
+    overlay = Image.new("RGBA", img.size)
+    d = ImageDraw.Draw(overlay)
+    w, h = img.size
+    pad = max(3, int(min(w, h)*.014))
+    used = []
+    # HUD states retain every result; avoid covering the arena with a pile
+    # of labels when several racers are eliminated on the same frame.
+    for _, kind, racer_idx, x, y, age in sorted(events, key=lambda e:e[0], reverse=True)[:4]:
+        name = race["racers"][racer_idx]["name"]
+        place = view["places"][racer_idx]
+        if kind == "out":
+            reason = race.get("elimination_reasons", {}).get(racer_idx, "impact").upper()
+            label, color = f"{name} OUT / {reason}", (255,136,143)
+        elif race.get("qualifier_count", 1) > 1 and place is not None and place <= race["qualifier_count"]:
+            label, color = f"{name} QUALIFIED / #{place}", (99,239,188)
+        else:
+            label, color = f"{name} FINISHED / #{place}", (237,247,255)
+        font = _fit_text_font(label, get_font(max(10, int(h*.020))), w*.90-2*pad)
+        bounds = d.textbbox((0,0), label, font=font)
+        box_w = d.textlength(label, font=font)+2*pad
+        box_h = bounds[3]-bounds[1]+2*pad
+        left = max(pad, min(x-box_w/2, w-pad-box_w))
+        base_y = y-camera_top+hud_height-age*h*.035
+        for offset in (0,-1,1,-2,2,-3,3,-4,4):
+            top = max(hud_height+pad, min(base_y+offset*(box_h+pad), h-pad-box_h))
+            rect = (left, top, left+box_w, top+box_h)
+            if not any(rect[0] < r[2]+pad and rect[2] > r[0]-pad and
+                       rect[1] < r[3]+pad and rect[3] > r[1]-pad for r in used):
+                break
+        used.append(rect)
+        opacity = max(0, 1-age/lifetime)
+        d.rounded_rectangle(rect, radius=pad, fill=(15,20,31,int(235*opacity)))
+        d.text((left+pad,top+pad),label,anchor="lt",font=font,fill=(*color,int(255*opacity)))
+    img.alpha_composite(overlay)
+
+
 @lru_cache(maxsize=256)
 def _hud_portrait(name, color, size):
     return make_racer_icon(color, size, name=name)
 
 
-def _draw_video_hud(img, race, frame, mode, accent, in_intro=False, is_final=False):
+def _draw_video_hud(img, race, frame, mode, accent, in_intro=False, is_final=False, view=None):
     w, h = img.size
     height, pad = _video_hud_height(w, h), int(min(w, h) * 0.035)
     d = ImageDraw.Draw(img)
@@ -2601,8 +2672,9 @@ def _draw_video_hud(img, race, frame, mode, accent, in_intro=False, is_final=Fal
         f"TOP {qualifiers} ADVANCE" if qualifiers > 1 else "FIRST TO FINISH")
     d.text((pad, height * .06), f"{status}  /  {rule}", anchor="lt",
            font=get_font(max(8, int(height * .10))), fill=(157, 173, 194, 255))
-    title_font = _fit_text_font(mode, get_font(int(height * .23)), w * .68)
-    d.text((pad, height * .22), mode, anchor="lt", font=title_font, fill=(245, 248, 255, 255))
+    title = race.get("heat_title", mode)
+    title_font = _fit_text_font(title, get_font(int(height * .23)), w * .68)
+    d.text((pad, height * .22), title, anchor="lt", font=title_font, fill=(245, 248, 255, 255))
     elapsed = 0 if in_intro else frame.get("step", 0) / PHYSICS_HZ
     if mode == "BATTLE ROYALE":
         until_storm = max(0, race["max_seconds"] * BATTLE_ZONE_SHRINK_START_FRAC - elapsed)
@@ -2611,6 +2683,11 @@ def _draw_video_hud(img, race, frame, mode, accent, in_intro=False, is_final=Fal
         storm = f"STORM IN {until_storm:.1f}s" if until_storm > 0 else (
             f"{exposed} IN STORM" if exposed else "STORM ACTIVE")
         detail = f"{frame.get('n_alive', race['n_racers'])} IN PLAY  /  {storm}"
+    elif qualifiers > 1:
+        qualified = min(qualifiers, frame.get("n_finished", 0))
+        remaining = qualifiers-qualified
+        next_spot = f"{remaining} SPOT{'S' if remaining != 1 else ''} LEFT" if remaining else "HEAT COMPLETE"
+        detail = f"{qualified}/{qualifiers} QUALIFIED  /  {next_spot}"
     else:
         detail = f"{frame.get('n_finished', 0)} FINISHED  /  {race['n_racers']} RACERS"
     detail_font = _fit_text_font(detail, get_font(max(8, int(height * .11))), w-pad*2)
@@ -2644,13 +2721,30 @@ def _draw_video_hud(img, race, frame, mode, accent, in_intro=False, is_final=Fal
         label = racer["name"]
         text_x = x+size+gap+2
         available_w = x+cell_w-text_x-gap
+        badge_x = x+cell_w-gap
+        direction = view["directions"][i] if view and not in_intro and not is_final else None
+        if direction:
+            arrow_w = max(5, int(cell_h*.23))
+            arrow_y = y+(cell_h-gap)/2
+            delta = arrow_w*.55 * (-1 if direction == "above" else 1)
+            d.polygon([(badge_x-arrow_w/2, arrow_y+delta),
+                       (badge_x-arrow_w, arrow_y-delta), (badge_x, arrow_y-delta)],
+                      fill=(169,193,217,255))
+            badge_x -= arrow_w+gap
+            available_w -= arrow_w+gap
+        place = view["places"][i] if view else None
+        badge = None
+        badge_color = (*accent, 255)
         if in_danger:
             remaining = math.ceil(max(0, BATTLE_STORM_KILL_SECONDS-exposure)*10)/10
-            timer_font = get_font(max(8, int(cell_h*.56)))
-            timer_label = f"{remaining:.1f}s"
-            available_w -= d.textlength(timer_label, font=timer_font) + gap
-            d.text((x+cell_w-gap, y+(cell_h-gap)/2), timer_label, anchor="rm",
-                   font=timer_font, fill=(255, 174, 147, 255))
+            badge = f"{remaining:.1f}s"
+            badge_color = (255,174,147,255)
+        elif place is not None:
+            badge = f"Q{place}" if qualifiers > 1 and place <= qualifiers else f"#{place}"
+        if badge:
+            badge_font = get_font(max(8, int(cell_h*.56)))
+            available_w -= d.textlength(badge, font=badge_font) + gap
+            d.text((badge_x, y+(cell_h-gap)/2), badge, anchor="rm", font=badge_font, fill=badge_color)
         font = _fit_text_font(label, get_font(max(9,int(min(cell_h*.72,height*.13)))), available_w)
         d.text((text_x, y+(cell_h-gap)/2), label, anchor="lm", font=font,
                fill=(239,246,255,255) if alive or finished else (106,119,140,255))
@@ -2745,9 +2839,8 @@ def build_race_clip(race):
     maze_img_h = maze_img.height
 
     camera_tops = _camera_positions(race, maze_img_h, viewport_h, average=False)
+    views = _presentation_states(race, camera_tops, viewport_h)
     accent = (76, 220, 178)
-
-    finish_pop_font = get_font(int(h * 0.020))
 
     ambient_particles = _make_ambient_particles(race["seed"], 14, w, h)
 
@@ -2784,20 +2877,6 @@ def build_race_clip(race):
                     color = (255, 220, 120) if kind == "wall" else (255, 255, 255)
                     d.ellipse([bx - rr, ry - rr, bx + rr, ry + rr], outline=(*color, a), width=3)
 
-            for fi in range(max(0, idx - 20), idx + 1):
-                if fi not in race["finish_frame_flags"]:
-                    continue
-                age = idx - fi
-                if age > 24:
-                    continue
-                pa = max(0, int(255 * (1 - age / 24.0)))
-                for (ridx, fx, fy) in race["finish_frame_flags"][fi]:
-                    ry = fy - crop_top + HUD_MARGIN - age * 1.5
-                    label = f"{racers[ridx]['name']} FINISHED!"
-                    lw = d.textlength(label, font=finish_pop_font)
-                    d.text((fx - lw / 2, ry), label, font=finish_pop_font, fill=(255, 255, 255, pa),
-                           stroke_width=2, stroke_fill=(0, 0, 0, pa))
-
         for i in range(n):
             pos = st["pos"][i]
             if pos is None:
@@ -2809,7 +2888,9 @@ def build_race_clip(race):
             icon = icons[i].rotate(ang, resample=Image.BICUBIC)
             img.alpha_composite(icon, (int(x - icon.width / 2), int(ry - icon.height / 2)))
 
-        _draw_video_hud(img, race, st, "MAZE RACE", accent, in_intro, idx >= finale_start and not in_intro)
+        if not in_intro:
+            _draw_race_events(img, race, idx, crop_top, HUD_MARGIN, views[idx])
+        _draw_video_hud(img, race, st, "MAZE RACE", accent, in_intro, idx >= finale_start and not in_intro, views[idx])
         if in_intro:
             _draw_countdown(img, t, accent)
         elif idx >= finale_start:
@@ -2881,9 +2962,9 @@ def build_battle_clip(race):
     maze_img_h = maze_img.height
 
     camera_tops = _camera_positions(race, maze_img_h, viewport_h, average=True)
+    views = _presentation_states(race, camera_tops, viewport_h)
     accent = (255, 157, 94)
 
-    elim_pop_font = get_font(int(h * 0.020))
 
     ambient_particles = _make_ambient_particles(race["seed"], 14, w, h)
 
@@ -2961,37 +3042,6 @@ def build_battle_clip(race):
                     color = (255, 220, 120) if kind == "wall" else (255, 255, 255)
                     d.ellipse([bx - rr, ry - rr, bx + rr, ry + rr], outline=(*color, a), width=3)
 
-            for fi in range(max(0, idx - 20), idx + 1):
-                if fi not in race["elim_frame_flags"]:
-                    continue
-                age = idx - fi
-                if age > 24:
-                    continue
-                pa = max(0, int(255 * (1 - age / 24.0)))
-                for (ridx, fx, fy) in race["elim_frame_flags"][fi]:
-                    ry = fy - crop_top + HUD_MARGIN - age * 1.5
-                    cause = race.get("elimination_reasons", {}).get(ridx, "impact").upper()
-                    label = f"{racers[ridx]['name']} OUT / {cause}"
-                    lw = d.textlength(label, font=elim_pop_font)
-                    label_x = max(w*.02, min(fx-lw/2, w*.98-lw))
-                    label_y = max(HUD_MARGIN+5, min(ry, h-2*elim_pop_font.size))
-                    d.text((label_x, label_y), label, font=elim_pop_font, fill=(255, 90, 90, pa),
-                           stroke_width=2, stroke_fill=(0, 0, 0, pa))
-
-            for fi in range(max(0, idx - 20), idx + 1):
-                if fi not in race["finish_frame_flags"]:
-                    continue
-                age = idx - fi
-                if age > 24:
-                    continue
-                pa = max(0, int(255 * (1 - age / 24.0)))
-                for (ridx, fx, fy) in race["finish_frame_flags"][fi]:
-                    ry = fy - crop_top + HUD_MARGIN - age * 1.5
-                    label = f"{racers[ridx]['name']} FINISHED!"
-                    lw = d.textlength(label, font=elim_pop_font)
-                    d.text((fx - lw / 2, ry), label, font=elim_pop_font, fill=(255, 255, 255, pa),
-                           stroke_width=2, stroke_fill=(0, 0, 0, pa))
-
         for i in range(n):
             pos = st["pos"][i]
             if pos is None:
@@ -3011,7 +3061,9 @@ def build_battle_clip(race):
                       end=-90 + 360 * min(1, exposure/BATTLE_STORM_KILL_SECONDS),
                       fill=(255, 70, 76, 255), width=max(2, int(w*.004)))
 
-        _draw_video_hud(img, race, st, "BATTLE ROYALE", accent, in_intro, idx >= finale_start and not in_intro)
+        if not in_intro:
+            _draw_race_events(img, race, idx, crop_top, HUD_MARGIN, views[idx])
+        _draw_video_hud(img, race, st, "BATTLE ROYALE", accent, in_intro, idx >= finale_start and not in_intro, views[idx])
         if in_intro:
             _draw_countdown(img, t, accent)
         elif idx >= finale_start:

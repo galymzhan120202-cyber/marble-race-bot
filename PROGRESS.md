@@ -4,6 +4,30 @@ Latest update: 2026-10-07. Update this file whenever a setup step changes —
 session/machine switches have already lost unsaved browser work once, this
 file is the durable record.
 
+## Following racers and tournament qualification (2026-10-07)
+
+- Live tournament HUDs now identify the round and heat, show the remaining
+  qualification spots, and mark finishers in their actual arrival order.
+  Placement badges are built from events already recorded at that frame;
+  simultaneous finishers beyond the qualifying quota are not called qualifiers.
+- The camera waits for the required number of finishers before holding the
+  finish. A 50-heat audit found two former empty-camera cases: spine_branches
+  seed 41 (0.25 s) and scatter_pillars seed 997 (1.5 s). Both are regression
+  tests, and the same audit now has no empty live camera frames while a
+  qualification spot remains.
+- Portrait/landscape roster arrows show whether an active racer is above or
+  below the camera. Finished and eliminated racers never get these arrows.
+- Shared finish/elimination notices stay inside the play area, avoid nearby
+  notices and fade over 0.85 seconds at every output FPS. They are composited
+  after racer sprites so sprites cannot cover the notice text.
+- Explicit rosters retain their colours in every heat. Previously the
+  contrast adjustment could recolour a tournament racer differently from
+  its title card, bracket and subsequent heats.
+- Validation: 239 Python tests, all 50 tournament camera cases, four offline
+  video pipeline encode/decode checks with audio, plus a 960x540 qualification
+  clip and full-size visual review of live/qualified/offscreen states.
+  No publishing services were contacted by the previews.
+
 ## YouTube video logic and interface (2026-10-07)
 
 - Battle now routes toward the nearest safe maze cell with a small allowance
