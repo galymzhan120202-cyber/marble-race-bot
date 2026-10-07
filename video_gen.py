@@ -90,25 +90,12 @@ TITLE_TEMPLATES = [
 ]
 
 DESCRIPTION_TEMPLATES = [
-    "{names} race through a random maze!\n"
-    "Winner: {winner} 🏆\n\n"
-    "Fully generated race, zero footage, zero copyright risk. New maze every upload.",
-
-    "🧩🏁 {names} just raced through a totally random labyrinth!\n\n"
-    "🏆 Winner: {winner}\n\n"
-    "No script, no real footage — just pure chaotic physics. New maze every day!",
-
-    "Only ONE racer finds the way out first... 💥\n\n"
-    "{names}\n"
-    "🏆 {winner} takes the win!\n\n"
-    "Every maze, every racer, every outcome — 100% randomly generated.",
-
-    "🎲 Random maze. Zero rules. One winner.\n\n"
-    "{names} → {winner} wins!\n\n"
-    "New chaos every single upload — who do you think should've won?",
-
-    "{names} dove into the maze and only {winner} found the exit first. 🏆\n\n"
-    "Fully code-generated race — no scripts, no stock footage, no copyright risk.",
+    "{names} race through a generated maze!\n\n"
+    "The first racer across the finish line wins. Pick your racer before the countdown ends.",
+    "One maze, one exit: {names}.\n\n"
+    "Follow the turns, collisions and overtakes all the way to the finish. Who is your pick?",
+    "{names} take on a new labyrinth.\n\n"
+    "Procedural arenas and simulated physics decide the race. Watch the finish to see who wins!",
 ]
 
 
@@ -119,13 +106,13 @@ def pick_rotating_tags(count=6):
 def build_title_and_description(racer_names, winner_name, result_reason="finish"):
     names_joined = " vs ".join(racer_names)
     template = random.choice(TITLE_TEMPLATES)
-    title = template.format(names=names_joined, n=len(racer_names), winner=winner_name)[:95]
+    title = template.format(names=names_joined, n=len(racer_names))[:95]
 
     racer_tags = ' '.join(f"#{name.lower()}" for name in racer_names[:3])
     hashtags = f"{racer_tags} {pick_rotating_tags()}"
-    body = random.choice(DESCRIPTION_TEMPLATES).format(names=names_joined, winner=winner_name)
+    body = random.choice(DESCRIPTION_TEMPLATES).format(names=names_joined)
     if result_reason == "timeout":
-        body = f"{names_joined} raced through a random maze!\n\nTime limit reached. {winner_name} wins by farthest progress toward the finish."
+        body = f"{names_joined} race through a generated maze!\n\nTime limit reached. Progress toward the finish decides the result."
     description = f"{body}\n\n{hashtags}"
     tags = list(racer_names) + ["maze race", "marble race", "physics simulation", "shorts"]
     return title, description, tags

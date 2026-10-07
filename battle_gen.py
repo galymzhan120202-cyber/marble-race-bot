@@ -58,22 +58,9 @@ BATTLE_TITLE_TEMPLATES = [
 ]
 
 BATTLE_DESCRIPTION_TEMPLATES = [
-    "{names} drop into a shrinking arena — only one walks out!\n"
-    "Survivor: {winner} 🏆\n\n"
-    "Fully generated battle, zero footage, zero copyright risk. New arena every upload.",
-
-    "🌀⚔️ {names} just fought it out in a randomly generated shrinking-zone arena!\n\n"
-    "🏆 Survivor: {winner}\n\n"
-    "No script, no real footage — just pure chaotic physics. New battle every day!",
-
-    "The zone closes in, the weapons run out fast... 💥\n\n"
-    "{names}\n"
-    "🏆 {winner} is the last one standing!\n\n"
-    "Every arena, every racer, every outcome — 100% randomly generated.",
-
-    "🎲 Random arena. Shrinking zone. One survivor.\n\n"
-    "{names} → {winner} wins!\n\n"
-    "New chaos every single upload — who do you think should've survived?",
+    "{names} face weapon pickups and an advancing storm! Pick your racer before the start.",
+    "The storm is closing in on {names}. Which racer can find a safe passage through this arena?",
+    "{names} enter a generated battle maze. Watch the pickups, escapes and collisions decide the result.",
 ]
 
 BATTLE_HASHTAG_POOL = [
@@ -89,15 +76,15 @@ def _pick_battle_tags(count=6):
 def build_battle_title_and_description(racer_names, winner_name, result_reason="last_standing"):
     names_joined = " vs ".join(racer_names)
     template = random.choice(BATTLE_TITLE_TEMPLATES)
-    title = template.format(names=names_joined, n=len(racer_names), winner=winner_name)[:95]
+    title = template.format(names=names_joined, n=len(racer_names))[:95]
 
     racer_tags = ' '.join(f"#{name.lower()}" for name in racer_names[:3])
     hashtags = f"{racer_tags} {_pick_battle_tags()}"
-    body = random.choice(BATTLE_DESCRIPTION_TEMPLATES).format(names=names_joined, winner=winner_name)
-    if result_reason == "finish":
-        body = f"{names_joined} face weapon pickups and an advancing storm!\n\n{winner_name} wins by crossing the finish line first."
-    elif result_reason == "timeout":
-        body = f"{names_joined} battle in a random maze!\n\nTime limit reached. {winner_name} wins by farthest progress among the survivors."
+    body = random.choice(BATTLE_DESCRIPTION_TEMPLATES).format(names=names_joined)
+    if result_reason == "timeout":
+        body += "\n\nTime limit reached. Progress among the surviving racers decides the result."
+    else:
+        body += "\n\nTwo ways to win: cross the finish line first or be the last racer standing. Return to safety before the storm timer runs out."
     description = f"{body}\n\n{hashtags}"
     tags = list(racer_names) + ["battle royale", "elimination arena", "physics simulation", "shorts"]
     return title, description, tags

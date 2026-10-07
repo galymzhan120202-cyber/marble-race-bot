@@ -72,20 +72,13 @@ TOURNAMENT_TITLE_TEMPLATES = [
 ]
 
 TOURNAMENT_DESCRIPTION_TEMPLATES = [
-    "16 racers, one single-elimination maze tournament!\n\n"
-    "🏁 Round of 16 → Round of 8 → Final\n"
-    "🏆 Champion: {champion}\n\n"
-    "Fully code-generated mazes and physics, zero stock footage, zero copyright risk.",
-
-    "The full bracket, start to finish: 4 heats of 4 in the Round of 16, "
-    "then Round of 8, then one Final heat crowns the champion.\n\n"
-    "🏆 This tournament's champion: {champion}\n\n"
-    "Every maze is randomly generated — no two tournaments ever play out the same.",
-
-    "🧩🏆 Single-elimination maze tournament — 16 racers enter, only one makes it "
-    "through every round.\n\n"
-    "Champion: {champion}\n\n"
-    "100% procedurally generated: mazes, physics, sound effects — nothing pre-recorded.",
+    "16 racers, one maze tournament!\n\n"
+    "Round of 16 → Round of 8 → Final. The top two in each early heat advance; "
+    "the final's first finisher becomes champion. Choose your racer and follow the bracket.",
+    "Four opening heats, two semifinals and one final decide the champion.\n\n"
+    "Two racers advance from every early heat. Can your pick make it through all three rounds?",
+    "16 racers enter a tournament of generated mazes.\n\n"
+    "Top two advance until the final, where only one wins. Follow the bracket to discover the champion!",
 ]
 
 TOURNAMENT_HASHTAGS = "#mazerace #tournament #bracket #satisfying #simulation #physics"
@@ -93,9 +86,9 @@ TOURNAMENT_HASHTAGS = "#mazerace #tournament #bracket #satisfying #simulation #p
 
 def build_tournament_title_and_description(champion_name):
     title = random.choice(TOURNAMENT_TITLE_TEMPLATES)[:95]
-    body = random.choice(TOURNAMENT_DESCRIPTION_TEMPLATES).format(champion=champion_name)
+    body = random.choice(TOURNAMENT_DESCRIPTION_TEMPLATES)
     description = f"{body}\n\n{TOURNAMENT_HASHTAGS}"
-    tags = ["maze race tournament", "bracket", "physics simulation", "marble race", champion_name]
+    tags = ["maze race tournament", "bracket", "physics simulation", "marble race"]
     return title, description, tags
 
 

@@ -1,8 +1,10 @@
 from unittest.mock import MagicMock
+import random
 
 import video_gen
 import battle_gen
 import drop_gen
+import tournament_gen
 import pytest
 
 
@@ -29,7 +31,30 @@ def test_timeout_description_does_not_claim_a_finish(build):
     assert 'first' not in description
 
 
-def test_battle_finish_is_not_described_as_last_survivor():
+def test_battle_description_explains_both_win_conditions_without_revealing_result():
     _,description,_=battle_gen.build_battle_title_and_description(['Sky','Ghost'],'Sky','finish')
     assert 'finish line first' in description
-    assert 'last one standing' not in description
+    assert 'last racer standing' in description
+    assert 'Sky wins' not in description
+
+
+@pytest.mark.parametrize('build', [video_gen.build_title_and_description,
+    battle_gen.build_battle_title_and_description, drop_gen.build_drop_title_and_description])
+@pytest.mark.parametrize('reason', ['finish', 'last_standing', 'timeout'])
+def test_public_metadata_is_independent_of_the_winner(build, reason):
+    for seed in range(30):
+        random.seed(seed)
+        first = build(['Sky', 'Ghost'], 'Sky', reason)
+        random.seed(seed)
+        second = build(['Sky', 'Ghost'], 'Ghost', reason)
+        assert first == second
+
+
+def test_tournament_metadata_does_not_reveal_the_champion_in_tags_or_text():
+    for seed in range(30):
+        random.seed(seed)
+        first = tournament_gen.build_tournament_title_and_description('Sky')
+        random.seed(seed)
+        second = tournament_gen.build_tournament_title_and_description('Ghost')
+        assert first == second
+        assert 'Sky' not in str(first) and 'Ghost' not in str(first)

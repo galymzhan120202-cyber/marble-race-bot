@@ -1,11 +1,55 @@
 """Check arena topology against the actual collision shapes, not just BFS."""
 import random
+import math
 
 import pymunk
 import pytest
 import networkx as nx
 
 import race_sim as sim
+
+
+@pytest.mark.parametrize('kind', sim.MAZE_STRUCTURE_KINDS)
+def test_storm_escape_uses_nearest_safe_passage_across_advancing_boundary(kind):
+    cols, rows = 6, 20
+    geo = sim.MazeGeometry(1080, cols, rows)
+    right, down = sim.generate_structured_maze(kind, cols, rows, random.Random(41), 8)
+    finish = sim.finish_routes(right, down, cols, rows, (rows-1, 3), 8)
+    graph = nx.Graph()
+    graph.add_nodes_from((r, c) for r in range(rows) for c in range(cols))
+    graph.add_edges_from(((r,c),(r,c+1)) for r in range(rows) for c in range(cols-1) if right[r][c])
+    graph.add_edges_from(((r,c),(r+1,c)) for r in range(rows-1) for c in range(cols) if down[r][c])
+    routes = sim.StormEscapeRoutes(geo, right, down)
+    for row in (2, 5, 10, 15, 18):
+        top = geo.top_border + geo.cell * row
+        velocity = geo.cell * .6
+        safe_y = top + geo.racer_radius + velocity * .35
+        sources = [p for p in graph if geo.cell_center(*p)[1] >= safe_y]
+        expected = nx.multi_source_dijkstra_path_length(graph, sources)
+        distances = routes.distances(safe_y)
+        assert all(distances[r][c] == length for (r,c),length in expected.items())
+        for cell, length in expected.items():
+            if not length:
+                continue
+            target = routes.waypoint(cell, geo.cell_center(*cell), top, velocity, finish)
+            target_cell = (math.floor((target[1]-geo.top_border)/geo.cell),
+                           math.floor((target[0]-geo.border_w)/geo.cell))
+            assert graph.has_edge(cell, target_cell)
+            assert expected[target_cell] == length-1
+
+
+def test_storm_escape_can_disagree_with_finish_route():
+    # Safe dead end below (1,1); the shorter finish route first goes left.
+    geo = sim.MazeGeometry(360, 3, 4)
+    right = [[True,True], [True,True], [False,False], [True,True]]
+    down = [[True,True,True], [True,True,True], [True,False,True]]
+    finish = sim.bfs_distance_field(right, down, 3, 4, (3,0))
+    assert finish[1][0] < finish[2][1]
+    routes = sim.StormEscapeRoutes(geo, right, down)
+    top = geo.top_border + 2*geo.cell
+    assert routes.waypoint((1,1), geo.cell_center(1,1), top, 0, finish) == geo.cell_center(2,1)
+    # Once safe, do not immediately turn back into the storm.
+    assert routes.waypoint((2,1), geo.cell_center(2,1), top, 0, finish) == geo.cell_center(2,1)
 
 
 @pytest.mark.parametrize('kind', sim.MAZE_STRUCTURE_KINDS)

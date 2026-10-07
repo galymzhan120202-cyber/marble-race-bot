@@ -90,6 +90,19 @@ def test_racers_can_cross_back_out_of_storm_and_reset_exposure():
     assert escaped, 'The storm must not physically block a return to safety'
 
 
+@pytest.mark.parametrize('kind,seed,racer', [('radial', 41, 2), ('terraces', 103, 3)])
+def test_battle_recovery_can_back_out_despite_repeated_contacts(monkeypatch, kind, seed, racer):
+    monkeypatch.setattr(sim, 'pick_maze_structure', lambda _: kind)
+    race = sim.simulate_battle(1080, 1920, seed, n_racers=8)
+    frames = race['frames'][:race['finale_start']]
+    for end in range(72, len(frames), 12):
+        points = [f['pos'][racer] for f in frames[end-72:end]]
+        if any(p is None for p in points):
+            continue
+        span = max(max(p[k] for p in points)-min(p[k] for p in points) for k in (0, 1))
+        assert span >= race['geo'].racer_radius * 1.5
+
+
 @pytest.mark.parametrize('run,build', [
     (sim.simulate_race,sim.build_race_clip),
     (sim.simulate_battle,sim.build_battle_clip),

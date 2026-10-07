@@ -16,6 +16,7 @@ import math
 import os
 import random
 from collections import deque
+from functools import lru_cache
 
 import numpy as np
 import pymunk
@@ -95,6 +96,7 @@ _FONT_CANDIDATES = [
 ]
 
 
+@lru_cache(maxsize=128)
 def get_font(size):
     for path in _FONT_CANDIDATES:
         try:
@@ -509,6 +511,49 @@ def balanced_spawn_cells(distances, cols, rows, n_racers, seed):
         sum(p[0] for p in group)))
     random.Random(f'{seed}:starting-grid').shuffle(selected)
     return selected
+
+
+class StormEscapeRoutes:
+    """Shortest routes to any safe cell, recomputed as the storm advances."""
+    def __init__(self, geo, open_right, open_down):
+        self.geo = geo
+        self.right, self.down = open_right, open_down
+        self.fields = {}
+
+    def distances(self, safe_y):
+        g = self.geo
+        first_row = min(g.rows-1, max(0, math.ceil((safe_y-g.top_border)/g.cell-.5)))
+        if first_row not in self.fields:
+            field = [[None]*g.cols for _ in range(g.rows)]
+            queue = deque()
+            for r in range(first_row,g.rows):
+                for c in range(g.cols):
+                    field[r][c] = 0
+                    queue.append((r,c))
+            while queue:
+                r,c = queue.popleft()
+                for nr,nc in open_neighbors(r,c,self.right,self.down,g.cols,g.rows):
+                    if field[nr][nc] is None:
+                        field[nr][nc] = field[r][c]+1
+                        queue.append((nr,nc))
+            self.fields[first_row] = field
+        return self.fields[first_row]
+
+    def waypoint(self, cell, position, top_y, velocity, finish_distances):
+        g = self.geo
+        # A small head start keeps a newly reached cell safe while turning.
+        safe_y = top_y + g.racer_radius + max(0,velocity)*.35
+        field = self.distances(safe_y)
+        r,c = cell
+        if field[r][c] == 0 and position[1] < safe_y:
+            return g.cell_center(r,c)
+        choices = open_neighbors(r,c,self.right,self.down,g.cols,g.rows)
+        if not choices:
+            return g.cell_center(r,c)
+        choice = min(choices,key=lambda p:(field[p[0]][p[1]],finish_distances[p[0]][p[1]]))
+        if field[r][c] == 0 and field[choice[0]][choice[1]] > 0:
+            return g.cell_center(r,c)
+        return g.cell_center(*choice)
 
 
 # --- Themes ------------------------------------------------------------
@@ -1282,7 +1327,7 @@ def simulate_race(w, h, seed, fps=24, max_seconds=28, min_seconds=13, n_racers=N
                 else:
                     pos.append(None)
             n_finished_so_far = sum(1 for f in finished if f)
-            frames.append({"pos": pos, "active": list(active), "n_finished": n_finished_so_far,
+            frames.append({"pos": pos, "active": list(active), "finished": list(finished), "n_finished": n_finished_so_far,
                            "step": step_counter["n"]})
             frame_idx += 1
 
@@ -1502,6 +1547,7 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=32, min_seconds=14, n_racers
     winner_idx_box = [None]
     finish_log = []  # (step, racer_idx, x, y)
     elim_log = []  # (step, racer_idx, x, y)
+    elimination_reasons = {}
     bump_log = []
     step_counter = {"n": 0}
     per_racer_rng = [random.Random(hashlib.sha256((str(seed) + f"racer{i}").encode()).hexdigest()) for i in range(n_racers)]
@@ -1535,6 +1581,7 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=32, min_seconds=14, n_racers
     AWARENESS_CHASE = geo.cell * 6
 
     route_fields = {}
+    escape_routes = StormEscapeRoutes(geo, open_right, open_down)
 
     def _route_to(cell, point, flee=False):
         """Navigate actual maze passages, including a goal in this cell.
@@ -1557,7 +1604,7 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=32, min_seconds=14, n_racers
         chosen = (max if flee else min)(choices, key=lambda p: field[p[0]][p[1]])
         return geo.cell_center(*chosen)
 
-    def _eliminate(i, step):
+    def _eliminate(i, step, reason="impact"):
         if eliminated[i] or finished[i]:
             return
         # Once only one racer is left the result is settled. Do not kill
@@ -1565,6 +1612,7 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=32, min_seconds=14, n_racers
         if not finish_log and sum(active) <= 1:
             return
         eliminated[i] = True
+        elimination_reasons[i] = reason
         active[i] = False
         pos = bodies[i].position
         elim_log.append((step, i, pos.x, pos.y))
@@ -1584,20 +1632,11 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=32, min_seconds=14, n_racers
             return False
         x, y = bodies[i].position
 
-        # Outside the current safe funnel (the closing wall has swept past
-        # this cell) — override every other priority with a straight
-        # maze-graph move toward the finish, exactly like the fallback
-        # wander below. Earlier this used a raw XY escape point instead,
-        # which ignored maze wall connectivity entirely: aiming a racer at
-        # a geometric point behind a wall just pinned it against that wall
-        # (steering fighting the wall) instead of actually leading it out,
-        # since a real exit can require moving through an open neighbor
-        # cell that isn't a straight line toward that point at all.
+        # Survival takes priority over the finish: the nearest safe passage
+        # can be in a different direction from the shortest finish route.
         top_y, s_left, s_right, _vy, _vx = _zone_state(step_counter["n"] / PHYSICS_HZ)
         if x < s_left or x > s_right or y < top_y + geo.cell:
-            best = min(dist_field[nr][nc] for (nr, nc) in candidates)
-            best_candidates = [n for n in candidates if dist_field[n[0]][n[1]] == best]
-            target[i] = geo.cell_center(*per_racer_rng[i].choice(best_candidates))
+            target[i] = escape_routes.waypoint((r,c),(x,y),top_y,_vy,dist_field)
             return len(candidates) > 1
 
         if not armed[i]:
@@ -1790,7 +1829,7 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=32, min_seconds=14, n_racers
                     # Bound continuous exposure even if no safe route
                     # remains. Elimination uses the same event/result path
                     # as combat, so the ranking and animation stay aligned.
-                    _eliminate(i, step_counter["n"])
+                    _eliminate(i, step_counter["n"], reason="storm")
                     continue
             else:
                 outside_zone_steps[i] = 0
@@ -1806,7 +1845,11 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=32, min_seconds=14, n_racers
             steer_gain = STEER_GAIN * steer_mult[i]
             if outside_zone:
                 steer_gain *= 2.2  # escape urgently, not at normal cruising authority
-            if step_counter["n"] < recovery_until[i]:
+            if step_counter["n"] < motion_recovery.until[i]:
+                # Repeated contacts otherwise renew collision hesitation on
+                # every step, cancelling the watchdog's attempt to back out.
+                steer_gain *= 1.5
+            elif step_counter["n"] < recovery_until[i]:
                 remaining = (recovery_until[i] - step_counter["n"]) / RECOVERY_STEPS
                 steer_gain *= RECOVERY_MIN_STEER_MULT + (1 - RECOVERY_MIN_STEER_MULT) * (1 - remaining)
             steer_x = (desired_vx - vx_) * steer_gain
@@ -1891,7 +1934,7 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=32, min_seconds=14, n_racers
                 else:
                     pos.append(None)
             n_alive_now = sum(1 for a in active if a)
-            frames.append({"pos": pos, "active": list(active), "armed": list(armed), "n_alive": n_alive_now,
+            frames.append({"pos": pos, "active": list(active), "finished": list(finished), "armed": list(armed), "n_alive": n_alive_now,
                            "n_finished": len(finish_log), "step": step_counter["n"],
                            "storm_exposure": [s / PHYSICS_HZ for s in outside_zone_steps]})
             frame_idx += 1
@@ -1946,6 +1989,7 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=32, min_seconds=14, n_racers
         "frames": frames,
         "finish_frame_flags": finish_frame_flags,
         "elim_frame_flags": elim_frame_flags,
+        "elimination_reasons": elimination_reasons,
         "bump_frame_flags": bump_frame_flags,
         "racers": racers,
         "n_racers": n_racers,
@@ -2260,7 +2304,7 @@ def simulate_drop(w, h, seed, fps=24, max_seconds=22, min_seconds=8, n_racers=No
                     pos.append((b.position.x, b.position.y, -math.degrees(b.angle)))
                 else:
                     pos.append(None)
-            frames.append({"pos": pos, "active": list(active), "n_finished": len(finish_log), "step": step_counter["n"],
+            frames.append({"pos": pos, "active": list(active), "finished": list(finished), "n_finished": len(finish_log), "step": step_counter["n"],
                             "blade_angles": [-math.degrees(bl["body"].angle) for bl in blades]})
             frame_idx += 1
 
@@ -2354,7 +2398,7 @@ def build_drop_clip(race):
     ICON_SIZE = int(racer_radius * 2.4)
     icons = [make_racer_icon(r["color"], ICON_SIZE, name=r["name"]) for r in racers]
 
-    HUD_MARGIN = int(h * 0.13)
+    HUD_MARGIN = _video_hud_height(w, h)
     viewport_h = h - HUD_MARGIN
 
     camera_tops = _camera_positions(race, track_img_h, viewport_h, average=False)
@@ -2498,13 +2542,13 @@ def _fit_text_font(text, font, max_w):
     until `text` fits within max_w — a win-banner template with a longer
     racer name, or one of the longer TIMEOUT_WIN_TEXT_TEMPLATES, can
     otherwise render wider than the frame and get clipped off both edges."""
-    while _TEXT_PROBE.textlength(text, font=font) > max_w and font.size > 24:
-        font = get_font(font.size - 4)
+    while _TEXT_PROBE.textlength(text, font=font) > max_w and font.size > 8:
+        font = get_font(max(8, font.size - 2))
     return font
 
 
 def _camera_positions(race, world_h, viewport_h, lead_frac=0.36, average=False):
-    """Keep the finish in view when its racer disappears from active bodies."""
+    """Follow visible action, then hold the finish when its body disappears."""
     tops, previous = [], None
     finish_y = None
     smoothing = 1 - (1 - 0.06) ** (60 / race["fps"])
@@ -2514,37 +2558,111 @@ def _camera_positions(race, world_h, viewport_h, lead_frac=0.36, average=False):
             finish_y = events[0][2]
         points = [p[1] for p in frame["pos"] if p is not None]
         lead = (sum(points) / len(points) if average else max(points)) if points else previous
+        if average and points and max(points) - min(points) > viewport_h * .7:
+            # A mean between distant groups can show an entirely empty maze.
+            # Follow the largest visible group; stay with the current group
+            # when equally sized packs split to avoid alternating camera cuts.
+            ordered = sorted(points)
+            groups = [[y for y in ordered if start <= y <= start + viewport_h * .7]
+                      for start in ordered]
+            group = max(groups, key=lambda ys: (len(ys), -abs(sum(ys)/len(ys) - (previous if previous is not None else lead))))
+            lead = sum(group) / len(group)
         if finish_y is not None:
             lead = finish_y
         if lead is None:
             lead = 0.0
         previous = lead if previous is None else previous + smoothing * (lead - previous)
-        tops.append(max(0.0, min(previous - viewport_h * lead_frac, max(0.0, world_h - viewport_h))))
+        top = max(0.0, min(previous - viewport_h * lead_frac, max(0.0, world_h - viewport_h)))
+        if points and finish_y is None and not any(top <= y <= top + viewport_h for y in points):
+            # Reframe immediately if the followed group was eliminated.
+            previous = min(points, key=lambda y: abs(y-previous))
+            top = max(0.0, min(previous - viewport_h * lead_frac, max(0.0, world_h - viewport_h)))
+        tops.append(top)
     return tops
+
+
+def _video_hud_height(w, h):
+    return int(h * (.16 if h >= w else .20))
+
+
+@lru_cache(maxsize=256)
+def _hud_portrait(name, color, size):
+    return make_racer_icon(color, size, name=name)
 
 
 def _draw_video_hud(img, race, frame, mode, accent, in_intro=False, is_final=False):
     w, h = img.size
-    height, pad = int(h * 0.13), int(min(w, h) * 0.04)
+    height, pad = _video_hud_height(w, h), int(min(w, h) * 0.035)
     d = ImageDraw.Draw(img)
     d.rectangle((0, 0, w, height), fill=(15, 20, 31, 255))
     status = "GET READY" if in_intro else "RESULT" if is_final else "LIVE"
-    d.text((pad, height * 0.08), "MARBLE RACE  /  " + status,
-           font=get_font(max(10, int(height * 0.12))), fill=(157, 173, 194, 255))
-    title_font = _fit_text_font(mode, get_font(int(height * 0.29)), w * 0.64)
-    d.text((pad, height * 0.28), mode, font=title_font, fill=(245, 248, 255, 255))
+    qualifiers = race.get("qualifier_count", 1)
+    rule = "FINISH OR SURVIVE" if mode == "BATTLE ROYALE" else (
+        f"TOP {qualifiers} ADVANCE" if qualifiers > 1 else "FIRST TO FINISH")
+    d.text((pad, height * .06), f"{status}  /  {rule}", anchor="lt",
+           font=get_font(max(8, int(height * .10))), fill=(157, 173, 194, 255))
+    title_font = _fit_text_font(mode, get_font(int(height * .23)), w * .68)
+    d.text((pad, height * .22), mode, anchor="lt", font=title_font, fill=(245, 248, 255, 255))
+    elapsed = 0 if in_intro else frame.get("step", 0) / PHYSICS_HZ
     if mode == "BATTLE ROYALE":
-        detail = f"{frame.get('n_alive', race['n_racers'])} IN PLAY  /  {race['n_racers']} RACERS"
+        until_storm = max(0, race["max_seconds"] * BATTLE_ZONE_SHRINK_START_FRAC - elapsed)
+        exposed = sum(active and exposure > 0 for active, exposure in
+                      zip(frame["active"], frame.get("storm_exposure", [])))
+        storm = f"STORM IN {until_storm:.1f}s" if until_storm > 0 else (
+            f"{exposed} IN STORM" if exposed else "STORM ACTIVE")
+        detail = f"{frame.get('n_alive', race['n_racers'])} IN PLAY  /  {storm}"
     else:
         detail = f"{frame.get('n_finished', 0)} FINISHED  /  {race['n_racers']} RACERS"
-    d.text((pad, height * 0.72), detail, font=get_font(max(10, int(height * 0.14))), fill=(*accent, 255))
-    elapsed = 0 if in_intro else frame.get("step", 0) / PHYSICS_HZ
+    detail_font = _fit_text_font(detail, get_font(max(8, int(height * .11))), w-pad*2)
+    d.text((pad, height * .49), detail, anchor="lt", font=detail_font, fill=(*accent, 255))
     timer = f"{elapsed:04.1f}s"
-    font = get_font(max(12, int(height * 0.24)))
+    font = get_font(max(12, int(height * .20)))
     tw = d.textlength(timer, font=font)
-    box = (w - tw - pad * 1.6, height * 0.30, w - pad, height * 0.72)
+    box = (w - tw - pad * 1.6, height * .18, w - pad, height * .44)
     d.rounded_rectangle(box, radius=max(4, height * 0.07), fill=(29, 39, 55, 255))
-    d.text((box[0] + pad * 0.3, height * 0.35), timer, font=font, fill=(239, 246, 255, 255))
+    d.text(((box[0]+box[2])/2, (box[1]+box[3])/2), timer, anchor="mm", font=font, fill=(239, 246, 255, 255))
+
+    columns = min(race["n_racers"], 4 if h >= w else 8)
+    rows = math.ceil(race["n_racers"] / columns)
+    gap = max(2, int(w * .008))
+    cell_w = (w - 2*pad - (columns-1)*gap) / columns
+    cell_h = height * .32 / rows
+    for i, racer in enumerate(race["racers"]):
+        x = pad + (i % columns) * (cell_w + gap)
+        y = height * .64 + (i // columns) * cell_h
+        alive = frame["active"][i]
+        finished = frame.get("finished", [False] * race["n_racers"])[i]
+        exposure = frame.get("storm_exposure", [0] * race["n_racers"])[i]
+        in_danger = alive and exposure > 0 and not in_intro
+        fill = (29, 39, 55, 255) if alive or finished else (22, 27, 38, 255)
+        if in_danger:
+            fill = (87, 30, 45, 255)
+        d.rounded_rectangle((x, y, x+cell_w, y+cell_h-gap), radius=max(2,cell_h*.15), fill=fill)
+        size = max(8, int(cell_h-gap-2))
+        portrait = _hud_portrait(racer["name"], tuple(racer["color"]), size)
+        img.alpha_composite(portrait, (int(x+2), int(y+1)))
+        label = racer["name"]
+        text_x = x+size+gap+2
+        available_w = x+cell_w-text_x-gap
+        if in_danger:
+            remaining = math.ceil(max(0, BATTLE_STORM_KILL_SECONDS-exposure)*10)/10
+            timer_font = get_font(max(8, int(cell_h*.56)))
+            timer_label = f"{remaining:.1f}s"
+            available_w -= d.textlength(timer_label, font=timer_font) + gap
+            d.text((x+cell_w-gap, y+(cell_h-gap)/2), timer_label, anchor="rm",
+                   font=timer_font, fill=(255, 174, 147, 255))
+        font = _fit_text_font(label, get_font(max(9,int(min(cell_h*.72,height*.13)))), available_w)
+        d.text((text_x, y+(cell_h-gap)/2), label, anchor="lm", font=font,
+               fill=(239,246,255,255) if alive or finished else (106,119,140,255))
+        if not alive and not finished:
+            d.line((x+2,y+2,x+size,y+size),fill=(255,111,118,255),width=max(1,size//8))
+        elif in_danger:
+            end_x = x+2+(cell_w-4)*min(1, exposure/BATTLE_STORM_KILL_SECONDS)
+            d.line((x+2,y+cell_h-gap,end_x,y+cell_h-gap),fill=(255,94,110,255),width=max(1,size//8))
+        elif finished:
+            d.line((x+2,y+cell_h-gap,x+cell_w-2,y+cell_h-gap),fill=(*accent,255),width=max(1,size//8))
+        elif frame.get("armed", [False] * race["n_racers"])[i]:
+            d.line((x+2,y+cell_h-gap,x+cell_w-2,y+cell_h-gap),fill=(255,208,88,255),width=max(1,size//8))
     d.rectangle((0, height - max(2, int(h * 0.002)), w, height), fill=(*accent, 255))
 
 
@@ -2622,7 +2740,7 @@ def build_race_clip(race):
     ICON_SIZE = int(geo.racer_radius * 2.6)
     icons = [make_racer_icon(r["color"], ICON_SIZE, name=r["name"]) for r in racers]
 
-    HUD_MARGIN = int(h * 0.13)
+    HUD_MARGIN = _video_hud_height(w, h)
     viewport_h = h - HUD_MARGIN
     maze_img_h = maze_img.height
 
@@ -2758,7 +2876,7 @@ def build_battle_clip(race):
     WEAPON_ICON_SIZE = int(geo.racer_radius * 1.6)
     weapon_icon = _make_weapon_icon(WEAPON_ICON_SIZE)
 
-    HUD_MARGIN = int(h * 0.13)
+    HUD_MARGIN = _video_hud_height(w, h)
     viewport_h = h - HUD_MARGIN
     maze_img_h = maze_img.height
 
@@ -2818,7 +2936,7 @@ def build_battle_clip(race):
                        width=max(2, int(w * 0.005)))
                 label_font = get_font(max(10, int(h * 0.018)))
                 label_y = max(HUD_MARGIN + 5, boundary_y - h * 0.031)
-                d.text((s_left + w * 0.018, label_y), "DANGER ZONE / MOVE DOWN", font=label_font,
+                d.text((s_left + w * 0.018, label_y), "STORM / FIND SAFE PASSAGE", font=label_font,
                        fill=(255, 245, 235, 255), stroke_width=2, stroke_fill=(111, 24, 34, 255))
 
             for k, (px, py) in enumerate(race["pickup_pos"]):
@@ -2852,9 +2970,12 @@ def build_battle_clip(race):
                 pa = max(0, int(255 * (1 - age / 24.0)))
                 for (ridx, fx, fy) in race["elim_frame_flags"][fi]:
                     ry = fy - crop_top + HUD_MARGIN - age * 1.5
-                    label = f"{racers[ridx]['name']} ELIMINATED!"
+                    cause = race.get("elimination_reasons", {}).get(ridx, "impact").upper()
+                    label = f"{racers[ridx]['name']} OUT / {cause}"
                     lw = d.textlength(label, font=elim_pop_font)
-                    d.text((fx - lw / 2, ry), label, font=elim_pop_font, fill=(255, 90, 90, pa),
+                    label_x = max(w*.02, min(fx-lw/2, w*.98-lw))
+                    label_y = max(HUD_MARGIN+5, min(ry, h-2*elim_pop_font.size))
+                    d.text((label_x, label_y), label, font=elim_pop_font, fill=(255, 90, 90, pa),
                            stroke_width=2, stroke_fill=(0, 0, 0, pa))
 
             for fi in range(max(0, idx - 20), idx + 1):
@@ -2889,10 +3010,6 @@ def build_battle_clip(race):
                 d.arc((x-radius, ry-radius, x+radius, ry+radius), start=-90,
                       end=-90 + 360 * min(1, exposure/BATTLE_STORM_KILL_SECONDS),
                       fill=(255, 70, 76, 255), width=max(2, int(w*.004)))
-                remaining = math.ceil(max(0, BATTLE_STORM_KILL_SECONDS-exposure) * 10) / 10
-                label = f"ESCAPE {remaining:.1f}s"
-                d.text((x, ry-radius-h*.012), label, anchor="mb", font=get_font(max(10,int(h*.017))),
-                       fill=(255,245,235,255), stroke_width=2, stroke_fill=(100,20,30,255))
 
         _draw_video_hud(img, race, st, "BATTLE ROYALE", accent, in_intro, idx >= finale_start and not in_intro)
         if in_intro:
@@ -2956,10 +3073,11 @@ def _build_action_hook(race, builder, label, seconds):
         frame_index = min(end,start+int(t*fps))
         img = Image.fromarray(source.get_frame(INTRO_SECONDS+frame_index/fps)).convert("RGB")
         d = ImageDraw.Draw(img)
-        d.rectangle((0,0,w,int(h*.13)),fill=(15,20,31))
-        font = _fit_text_font(label,get_font(int(h*.038)),w*.9)
-        d.text((w/2,h*.035),label,anchor="mt",font=font,fill=(255,221,104))
-        d.text((w/2,h*.09),"RACE PREVIEW",anchor="mt",font=get_font(max(9,int(h*.016))),fill=(157,180,207))
+        height = _video_hud_height(w, h)
+        d.rectangle((0,0,w,height),fill=(15,20,31))
+        font = _fit_text_font(label,get_font(int(height*.29)),w*.9)
+        d.text((w/2,height*.27),label,anchor="mt",font=font,fill=(255,221,104))
+        d.text((w/2,height*.70),"RACE PREVIEW",anchor="mt",font=get_font(max(9,int(height*.12))),fill=(157,180,207))
         return np.array(img)
 
     clip = VideoClip(make_frame,duration=seconds)

@@ -4,6 +4,35 @@ Latest update: 2026-10-07. Update this file whenever a setup step changes —
 session/machine switches have already lost unsaved browser work once, this
 file is the durable record.
 
+## YouTube video logic and interface (2026-10-07)
+
+- Battle now routes toward the nearest safe maze cell with a small allowance
+  for the moving storm, rather than always following the finish route.
+  NetworkX checks the escape distances independently across all maze styles.
+  Safe dead ends no longer immediately send racers back into danger.
+- The broader arena audit caught two crowded Battle regressions (radial 41
+  and terraces 103). Repeated collision hesitation was suppressing the
+  movement watchdog's escape steering. Active recovery now keeps steering
+  authority; both cases have regression tests.
+- Video HUDs show race rules, named character portraits, current participant
+  states and elapsed time. Battle adds storm countdown, exposed-racer count
+  and individual exposure timers in the roster. Rings on the arena replace
+  overlapping warning text. Eliminations explain storm versus impact.
+  Tournament heats explicitly show that the top two advance.
+- Battle cameras follow a visible group instead of the empty space between
+  distant packs, and reframe if the followed group is eliminated. Finish
+  framing remains locked after the winning body disappears.
+- All four video metadata builders keep the result out of descriptions and
+  tags. Battle descriptions explain both valid win conditions. Tests verify
+  that changing the eventual winner cannot change the public metadata or
+  the live HUD. Small labels now shrink to fit; fonts and roster portraits
+  are cached to avoid rebuilding them every frame.
+- Validation: 227 Python tests; 290 forced-arena simulations and another 280
+  Battle runs covering seeds 0-39 with 2-8 racers. No confined 3-second stalls,
+  invalid rankings or invalid coordinates in these runs. Portrait/landscape
+  frames were visually reviewed and all four video pipelines encoded and
+  decoded offline with audio. No YouTube upload or Telegram message was sent.
+
 ## Arena audit, character identity and viewing pace (2026-10-07)
 
 - Forced all ten maze styles and four Drop styles through 290 new races,

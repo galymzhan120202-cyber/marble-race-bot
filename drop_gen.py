@@ -60,22 +60,12 @@ DROP_TITLE_TEMPLATES = [
 ]
 
 DROP_DESCRIPTION_TEMPLATES = [
-    "{names} drop down a random Plinko-style track!\n"
-    "Winner: {winner} 🏆\n\n"
-    "Fully generated physics, zero footage, zero copyright risk. New track every upload.",
-
-    "🟦🎯 {names} just tumbled down a totally random peg track!\n\n"
-    "🏆 Winner: {winner}\n\n"
-    "No script, no real footage — just pure gravity and bouncy physics. New track every day!",
-
-    "Gravity, pegs, spinning blades... only ONE square makes it down first. 💥\n\n"
-    "{names}\n"
-    "🏆 {winner} takes the win!\n\n"
-    "Every track, every racer, every outcome — 100% randomly generated.",
-
-    "🎲 Random track. Zero controls. One winner.\n\n"
-    "{names} → {winner} wins!\n\n"
-    "New chaos every single upload — who do you think should've won?",
+    "{names} drop down a generated Plinko-style track!\n\n"
+    "The first racer across the finish line wins. Pick your racer and follow every bounce.",
+    "Gravity, pegs and spinning blades: {names} face the drop.\n\n"
+    "Watch the finish to find out who makes it down first!",
+    "{names} tumble through a new physics arena.\n\n"
+    "Every collision can change the order. Who is your pick to reach the finish?",
 ]
 
 DROP_HASHTAG_POOL = [
@@ -91,13 +81,13 @@ def _pick_drop_tags(count=6):
 def build_drop_title_and_description(racer_names, winner_name, result_reason="finish"):
     names_joined = " vs ".join(racer_names)
     template = random.choice(DROP_TITLE_TEMPLATES)
-    title = template.format(names=names_joined, n=len(racer_names), winner=winner_name)[:95]
+    title = template.format(names=names_joined, n=len(racer_names))[:95]
 
     racer_tags = ' '.join(f"#{name.lower()}" for name in racer_names[:3])
     hashtags = f"{racer_tags} {_pick_drop_tags()}"
-    body = random.choice(DROP_DESCRIPTION_TEMPLATES).format(names=names_joined, winner=winner_name)
+    body = random.choice(DROP_DESCRIPTION_TEMPLATES).format(names=names_joined)
     if result_reason == "timeout":
-        body = f"{names_joined} tumble through a random marble drop!\n\nTime limit reached. {winner_name} wins by travelling farthest down the track."
+        body = f"{names_joined} tumble through a generated marble drop!\n\nTime limit reached. Progress down the track decides the result."
     description = f"{body}\n\n{hashtags}"
     tags = list(racer_names) + ["marble drop", "plinko", "physics simulation", "shorts"]
     return title, description, tags
