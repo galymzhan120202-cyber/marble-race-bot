@@ -1,8 +1,60 @@
 # Marble Race Bot — Setup Progress Log
 
-Statuses as of 2026-08-26. Update this file whenever a setup step changes —
+Latest update: 2026-10-07. Update this file whenever a setup step changes —
 session/machine switches have already lost unsaved browser work once, this
 file is the durable record.
+
+## Physics, storm, arenas and presentation fixes (2026-10-07)
+
+The user confirmed the YouTube bot is already running and uploading, and
+requested fixes for racers stopping, storm entrapment, game logic and arena
+design, followed by a commit and push.
+
+- Navigation now checks body clearance before cutting a maze corner.
+  Racer separation forces no longer act through intervening walls. A
+  movement-envelope watchdog detects confined bouncing and yields into a
+  real neighbouring passage using impulses, without teleporting racers.
+- Battle pickups and opponents use cached maze-distance fields instead of
+  greedy straight-line distance. Racers pursue a pickup inside their own
+  cell rather than immediately walking away from it.
+- **Storm mechanic updated:** removed the solid moving zone colliders.
+  Racers can cross back into safety; 2.5 seconds of continuous exposure
+  still eliminates them. Escape targeting starts as the boundary approaches.
+  The video shows the exact danger boundary and each exposed racer's timer.
+  This supersedes the earlier solid-wall design described below.
+- Battle resolves as soon as a racer finishes or one survivor remains.
+  The last survivor cannot be eliminated while waiting for minimum video
+  duration. Rankings include every finisher, survivor and eliminated racer.
+  Race/Drop also stop when nobody remains active instead of filming an empty
+  board. Finished bodies are removed on physics steps, independently of FPS.
+- Odd-width symmetric mazes now connect both halves through a middle spine
+  (important for 11-column tournament heats). All 10 arena kinds are checked
+  for reachability at even/odd widths. Finish sensors match the visible
+  checker stripe. Drop pegs leave clearance around the full blade sweep;
+  blade rendering now matches collider thickness.
+- Shared readable video HUD/result cards, fixed HUD occlusion by racers,
+  corrected Race sprite rotation, stable finish camera, synchronized countdown
+  audio, and a frozen storm during the result hold. Timeout results are
+  labelled accurately both on screen and in upload descriptions. Tournament
+  cards have a dark background, named entrants and accurate round labels.
+- Browser Race shares wall-aware navigation and confinement recovery. Drop
+  uses per-second damping and rotating-blade contact velocity. Countdown and
+  delayed-winner callbacks are cancelled on navigation; resize redraws frozen
+  scenes; the support link no longer covers game controls. Improved mobile
+  layout, keyboard selection and consistent finish-line graphics.
+- Upload retries now remain within the same resumable upload request in all
+  four modes. CLI errors exit nonzero. Preview mode skips YouTube history and
+  error notifications; rendering tests stub music and all publishing helpers.
+- Validation: **840 simulations** (40 seeds x every racer count 2–8 x three
+  modes), with zero non-finite positions, incomplete rankings, confined 3s
+  stalls or no-event timeouts. The original matched 100-run Battle sample
+  had 45 confined-stall cases and 19 incomplete rankings. A separate final
+  240-run Battle audit and a storm-escape regression also passed.
+- Encoded and decoded small local previews of all four video modes with
+  audio. Checked actual landscape tournament heats, storm/portrait/landscape
+  frames, and browser navigation at 390x844, 360x640 and 1440x900. Added Python
+  regressions, 168 seeded browser simulations, a reusable physics audit and
+  a push/PR test workflow. No real video was published during this audit.
 
 ## Done
 
@@ -453,10 +505,8 @@ death, guaranteeing every fight resolves.
 
 ## Still to do
 
-- [ ] Do a real (confirmed, explicit) first upload test — either manually
-      via `python video_gen.py` or via GitHub Actions `workflow_dispatch` —
-      only after the user explicitly OKs a real public video going live on
-      the new channel.
+- [x] User confirmed on 2026-10-07 that the bot is running and uploading to
+      YouTube. A fresh public upload was not needed for this local audit.
 - [ ] Drop 2-3 royalty-free fallback music tracks + `fallback_attribution.json`
       into `music/` (currently empty; Openverse fetch is the primary source,
       this is just the safety fallback — see `SETUP.md`).

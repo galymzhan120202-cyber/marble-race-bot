@@ -1,10 +1,9 @@
 """
 "Battle Royale" video generator — a second mode alongside the Shorts maze
 race (video_gen.py), built on the same code-only maze engine (race_sim.py).
-Racers spawn in a closed arena instead of racing to a finish line: a
-shrinking safe zone forces them together, scattered weapon pickups let an
-armed racer eliminate an unarmed one on collision, and the last racer
-standing wins. Independent schedule/cron from both the Shorts and the
+Racers navigate a maze with a finish line and an advancing storm. Weapon
+pickups enable knockback; thrown racers can be eliminated on wall impact.
+Win by finishing first or becoming the last survivor. Independent schedule/cron from both the Shorts and the
 Tournament (see scheduler.py / .github/workflows/battle.yml); shares the
 YouTube channel, OAuth credentials, Openverse music, SFX synthesis and
 Telegram notify helpers with video_gen.py.
@@ -24,7 +23,7 @@ from race_sim import (
     build_battle_cold_open_clip, build_cold_open_sfx,
 )
 from video_gen import (
-    base_dir, send_telegram, retry_with_backoff, ensure_directories_exist,
+    base_dir, send_telegram, ensure_directories_exist,
     get_recent_matchups, pick_background_music, upload_to_youtube, cleanup_temp_files,
     pick_rotating_tags, MAX_RETRIES, RETRY_DELAY, YOUTUBE_CATEGORY_ID,
     YOUTUBE_PRIVACY_STATUS, YOUTUBE_MADE_FOR_KIDS, VIDEO_CODEC, AUDIO_CODEC,
@@ -86,7 +85,7 @@ def _pick_battle_tags(count=6):
     return ' '.join(random.sample(BATTLE_HASHTAG_POOL, min(count, len(BATTLE_HASHTAG_POOL))))
 
 
-def build_battle_title_and_description(racer_names, winner_name):
+def build_battle_title_and_description(racer_names, winner_name, result_reason="last_standing"):
     names_joined = " vs ".join(racer_names)
     template = random.choice(BATTLE_TITLE_TEMPLATES)
     title = template.format(names=names_joined, n=len(racer_names), winner=winner_name)[:95]
@@ -94,6 +93,10 @@ def build_battle_title_and_description(racer_names, winner_name):
     racer_tags = ' '.join(f"#{name.lower()}" for name in racer_names[:3])
     hashtags = f"{racer_tags} {_pick_battle_tags()}"
     body = random.choice(BATTLE_DESCRIPTION_TEMPLATES).format(names=names_joined, winner=winner_name)
+    if result_reason == "finish":
+        body = f"{names_joined} face weapon pickups and an advancing storm!\n\n{winner_name} wins by crossing the finish line first."
+    elif result_reason == "timeout":
+        body = f"{names_joined} battle in a random maze!\n\nTime limit reached. {winner_name} wins by farthest progress among the survivors."
     description = f"{body}\n\n{hashtags}"
     tags = list(racer_names) + ["battle royale", "elimination arena", "physics simulation", "shorts"]
     return title, description, tags
@@ -106,7 +109,7 @@ def generate_battle_video(skip_upload: bool = False, n_racers: int = None):
         ensure_directories_exist()
         cleanup_temp_files()
 
-        recent_matchups = get_recent_matchups(AVOID_REPEAT_LOOKBACK)
+        recent_matchups = [] if skip_upload else get_recent_matchups(AVOID_REPEAT_LOOKBACK)
 
         seed = random.randint(1, 2**31 - 1)
         race = simulate_battle(
@@ -133,7 +136,7 @@ def generate_battle_video(skip_upload: bool = False, n_racers: int = None):
         logger.info(f"⚔️ Battle ({race['n_racers']}): {' vs '.join(racer_names)} — жеңімпаз: {winner_name}")
 
         video_title, video_description, video_tags = build_battle_title_and_description(
-            racer_names, winner_name
+            racer_names, winner_name, race["result_reason"]
         )
         logger.info(f"🏷️ Тақырып: {video_title}")
 
@@ -222,7 +225,7 @@ def generate_battle_video(skip_upload: bool = False, n_racers: int = None):
             logger.info(f"✓ Видео дайын: {final_output}")
 
             if not skip_upload:
-                video_id = retry_with_backoff(lambda: upload_to_youtube(final_output, video_title, video_description, video_tags, thumbnail_path))
+                video_id = upload_to_youtube(final_output, video_title, video_description, video_tags, thumbnail_path)
                 video_url = f"https://youtube.com/shorts/{video_id}"
                 send_telegram(
                     f"✅ <b>Жаңа Battle Royale видео жүктелді!</b>\n"
@@ -252,12 +255,10 @@ def generate_battle_video(skip_upload: bool = False, n_racers: int = None):
     except Exception as e:
         logger.error(f"❌ Қате: {e}")
         logger.debug(traceback.format_exc())
-        send_telegram(f"❌ <b>Battle Royale видео жасауда қате шықты!</b>\n<code>{str(e)[:300]}</code>")
+        if not skip_upload:
+            send_telegram(f"❌ <b>Battle Royale видео жасауда қате шықты!</b>\n<code>{str(e)[:300]}</code>")
         raise
 
 
 if __name__ == "__main__":
-    try:
-        generate_battle_video()
-    except Exception as e:
-        logger.error(f"Программа сәтсіз аяқталды: {e}")
+    generate_battle_video()

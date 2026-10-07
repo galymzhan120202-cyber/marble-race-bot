@@ -235,9 +235,17 @@ def _maze_symmetric(cols, rows, rng):
             if 0 <= mc < cols:
                 open_down[r][mc] = l_down[r][c]
     seam_c = half - 1
+    if cols % 2:
+        # The unmirrored middle column needs its own connected spine and
+        # bridges to BOTH halves. Previously odd-width tournament arenas
+        # left the entire right half disconnected from the finish.
+        for r in range(rows - 1):
+            open_down[r][half] = True
     if seam_c < cols - 1:
         for r in range(0, rows, max(2, rows // 5)):
             open_right[r][seam_c] = True
+            if cols % 2:
+                open_right[r][half] = True
     return open_right, open_down
 
 
@@ -512,6 +520,19 @@ class MazeGeometry:
         y = self.top_border + self.rows * self.cell + self.finish_depth / 2
         return (x, y)
 
+    @property
+    def finish_line_y(self):
+        return self.top_border + self.rows * self.cell + self.finish_depth * 0.45
+
+
+def _add_finish_sensor(space, geo):
+    sensor = pymunk.Segment(space.static_body,
+                            (geo.border_w, geo.finish_line_y),
+                            (geo.w - geo.border_w, geo.finish_line_y), 2)
+    sensor.sensor = True
+    sensor.collision_type = FINISH_TYPE
+    space.add(sensor)
+
 
 def build_wall_segments(geo, open_right, open_down, finish_col):
     """finish_col=None (battle mode's closed arena, no finish zone) closes the
@@ -749,6 +770,82 @@ WALL_TYPE = 0
 RACER_TYPE_BASE = 10
 FINISH_TYPE = 500
 
+
+def _corridor_waypoint(geo, cell, position, target, space):
+    """Clear the inside of a junction before steering around its corner.
+
+    Cell-entry detection happens when a racer's centre crosses a grid line,
+    while its body is still in the previous passage. Aiming immediately at
+    the next cell cuts through a solid corner and pins the racer to a wall.
+    """
+    r, c = cell
+    cx, cy = geo.cell_center(r, c)
+    hits = space.segment_query(position, target, geo.racer_radius * 0.85,
+                               pymunk.ShapeFilter())
+    if any(hit.shape.collision_type == WALL_TYPE and
+           hit.shape.body.body_type == pymunk.Body.STATIC for hit in hits):
+        return cx, cy
+    return target
+
+
+def _validate_simulation(w, h, fps, max_seconds, min_seconds, n_racers, forced_racers):
+    if not isinstance(fps, int) or fps <= 0 or PHYSICS_HZ % fps:
+        raise ValueError("fps must be a positive divisor of 120 (e.g. 24, 30 or 60)")
+    if w <= 0 or h <= 0 or not 0 <= min_seconds <= max_seconds or max_seconds <= 0:
+        raise ValueError("Invalid video dimensions or simulation duration")
+    count = len(forced_racers) if forced_racers is not None else n_racers
+    if count is not None and (not isinstance(count, int) or not 2 <= count <= len(RACER_POOL)):
+        raise ValueError("A race needs between 2 and 16 racers")
+
+
+def _remove_inactive(space, bodies, shapes, active):
+    # Apply on every physics step, not on video-frame boundaries. Finished
+    # racers must not keep bumping the field at lower rendering frame rates.
+    for i, shape in enumerate(shapes):
+        if not active[i] and shape in space.shapes:
+            space.remove(bodies[i], shape)
+
+
+class _MotionRecovery:
+    """Yield into a real neighbouring passage after sustained confined motion.
+
+    A bouncing pair can move every frame without leaving the doorway. Track
+    the whole movement envelope, rather than just displacement at two instants.
+    All recovery is through forces and reachable waypoints, never teleportation.
+    """
+    def __init__(self, count):
+        self.history = [deque(maxlen=7) for _ in range(count)]
+        self.until = [0] * count
+        self.targets = [None] * count
+
+    def waypoint(self, i, step, geo, cell, bodies, active, open_right, open_down, target):
+        body = bodies[i]
+        if step % (PHYSICS_HZ // 4) == 0:
+            samples = self.history[i]
+            samples.append(tuple(body.position))
+            if len(samples) == samples.maxlen and step >= self.until[i]:
+                span = max(max(p[k] for p in samples) - min(p[k] for p in samples) for k in (0, 1))
+                if span < geo.racer_radius * 1.5:
+                    choices = open_neighbors(*cell, open_right, open_down, geo.cols, geo.rows)
+                    if choices:
+                        others = [b.position for j, b in enumerate(bodies) if j != i and active[j]]
+                        def room(c):
+                            point = geo.cell_center(*c)
+                            separation = min((math.dist(point, p) for p in others), default=geo.cell * 3)
+                            # Prefer an escape different from the blocked target.
+                            return separation + min(geo.cell, math.dist(point, target)) * 0.5
+                        self.targets[i] = geo.cell_center(*max(choices, key=room))
+                        self.until[i] = step + int(PHYSICS_HZ * 0.85)
+                        dx = self.targets[i][0] - body.position.x
+                        dy = self.targets[i][1] - body.position.y
+                        length = math.hypot(dx, dy) or 1
+                        impulse = body.mass * geo.cell * 0.9
+                        body.apply_impulse_at_world_point((dx / length * impulse, dy / length * impulse), body.position)
+                        samples.clear()
+        if step < self.until[i]:
+            return self.targets[i]
+        return target
+
 # Race mode's racer-vs-racer separation force (see simulate_race) — module
 # level so a batch audit script can tune these without editing the function.
 REPEL_RADIUS_CELLS = 1.6
@@ -757,6 +854,7 @@ _REPEL_STRENGTH = 1200.0
 
 def simulate_race(w, h, seed, fps=24, max_seconds=28, min_seconds=13, n_racers=None,
                    cols=None, rows=None, forced_racers=None, required_finishers=1):
+    _validate_simulation(w, h, fps, max_seconds, min_seconds, n_racers, forced_racers)
     rng = random.Random(seed)
     theme = pick_theme(seed)
 
@@ -799,10 +897,7 @@ def simulate_race(w, h, seed, fps=24, max_seconds=28, min_seconds=13, n_racers=N
         space.add(seg)
 
     fzx, fzy = geo.finish_zone_center(finish_col)
-    finish_shape = pymunk.Circle(space.static_body, geo.cell * 0.55, offset=(fzx, fzy))
-    finish_shape.sensor = True
-    finish_shape.collision_type = FINISH_TYPE
-    space.add(finish_shape)
+    _add_finish_sensor(space, geo)
 
     # Racers collide as squares, not circles — a circle-vs-circle/wall
     # contact normal always passes straight through the circle's own
@@ -867,6 +962,7 @@ def simulate_race(w, h, seed, fps=24, max_seconds=28, min_seconds=13, n_racers=N
     RECOVERY_STEPS = int(0.30 * PHYSICS_HZ)
     RECOVERY_MIN_STEER_MULT = 0.12
     recovery_until = [0] * n_racers
+    motion_recovery = _MotionRecovery(n_racers)
 
     # Stuck-detection: a racer occasionally gets wedged in a dead-end/corner
     # (especially now that racer-racer bounces are more violent) and can
@@ -1054,6 +1150,11 @@ def simulate_race(w, h, seed, fps=24, max_seconds=28, min_seconds=13, n_racers=N
                     closing_speed = -((vix - vjx) * nx + (viy - vjy) * ny)
                     if closing_speed > REPEL_CLOSING_SPEED_GATE:
                         continue
+                    # Racers in separate corridors cannot separate through
+                    # the wall between them; that force cancels navigation.
+                    if any(hit.shape.collision_type == WALL_TYPE for hit in
+                           space.segment_query((xi, yi), (xj, yj), 0, pymunk.ShapeFilter())):
+                        continue
                     strength = REPEL_STRENGTH * (1 - d / REPEL_RADIUS)
                     repel_force[i_][0] += nx * strength
                     repel_force[i_][1] += ny * strength
@@ -1075,7 +1176,9 @@ def simulate_race(w, h, seed, fps=24, max_seconds=28, min_seconds=13, n_racers=N
             elif last_cell[i] == finish_cell:
                 target[i] = (fzx, fzy)
 
-            tx, ty = target[i]
+            waypoint = motion_recovery.waypoint(i, step_counter["n"], geo, last_cell[i],
+                bodies, active, open_right, open_down, target[i])
+            tx, ty = _corridor_waypoint(geo, last_cell[i], (x, y), waypoint, space)
             dx, dy = tx - x, ty - y
             dist = math.hypot(dx, dy) or 1.0
             speed_scale = min(1.0, max(0.35, dist / SLOWDOWN_RADIUS))
@@ -1102,6 +1205,7 @@ def simulate_race(w, h, seed, fps=24, max_seconds=28, min_seconds=13, n_racers=N
             bodies[i].apply_force_at_world_point((fx, fy), bodies[i].position)
 
         space.step(dt)
+        _remove_inactive(space, bodies, shapes, active)
 
         if step_counter["n"] % STUCK_CHECK_STEPS == 0:
             for i in range(n_racers):
@@ -1177,7 +1281,8 @@ def simulate_race(w, h, seed, fps=24, max_seconds=28, min_seconds=13, n_racers=N
                 else:
                     pos.append(None)
             n_finished_so_far = sum(1 for f in finished if f)
-            frames.append({"pos": pos, "active": list(active), "n_finished": n_finished_so_far})
+            frames.append({"pos": pos, "active": list(active), "n_finished": n_finished_so_far,
+                           "step": step_counter["n"]})
             frame_idx += 1
 
             if finish_log and finish_log[-1][0] > step_counter["n"] - steps_per_frame:
@@ -1190,14 +1295,7 @@ def simulate_race(w, h, seed, fps=24, max_seconds=28, min_seconds=13, n_racers=N
                 best = max(recent_bumps, key=lambda b: b[3])
                 bump_frame_flags[frame_idx - 1] = (best[1], best[2], best[3], best[4])
 
-            for i, b in enumerate(bodies):
-                if finished[i] and shapes[i] in space.shapes:
-                    try:
-                        space.remove(bodies[i], shapes[i])
-                    except Exception:
-                        pass
-
-            if len(finish_log) >= required_finishers and step_counter["n"] >= min_steps:
+            if not any(active) or (len(finish_log) >= required_finishers and step_counter["n"] >= min_steps):
                 break
 
     def _progress(i):
@@ -1226,6 +1324,7 @@ def simulate_race(w, h, seed, fps=24, max_seconds=28, min_seconds=13, n_racers=N
         "winner_idx": winner_idx[0],
         "winner_name": racers[winner_idx[0]]["name"],
         "winner_finished": winner_idx[0] in finished_order_list,
+        "result_reason": "finish" if finished_order_list else "timeout",
         "finish_order": finished_order_list,
         "n_finished_total": len(finish_log),
         "full_ranking": full_ranking,
@@ -1247,8 +1346,8 @@ def simulate_race(w, h, seed, fps=24, max_seconds=28, min_seconds=13, n_racers=N
 BATTLE_KNOCKBACK_IMPULSE = 950.0  # throw strength when a weapon lands a hit
 BATTLE_WALL_KILL_IMPULSE = 260.0  # impact strength vs a wall, while airborne, that's fatal
 BATTLE_FLYING_SECONDS = 0.5  # window after being thrown during which a hard wall hit eliminates
-BATTLE_ZONE_SHRINK_START_FRAC = 0.15  # of max_seconds: the closing walls start moving
-BATTLE_ZONE_SHRINK_END_FRAC = 0.85  # walls reach their final (minimum) position
+BATTLE_ZONE_SHRINK_START_FRAC = 0.15  # of max_seconds: the storm starts advancing
+BATTLE_ZONE_SHRINK_END_FRAC = 0.85  # storm reaches its final boundary
 BATTLE_ZONE_MIN_HALF_WIDTH_CELLS = 1.5  # how narrow the left/right walls can close to
 BATTLE_ZONE_END_MARGIN_ROWS = 2  # rows of headroom always left above the finish
 BATTLE_STORM_KILL_SECONDS = 2.5  # continuous time outside the safe funnel that's fatal
@@ -1280,25 +1379,14 @@ def _place_pickups(open_right, open_down, cols, rows, rng, k):
 
 def simulate_battle(w, h, seed, fps=24, max_seconds=32, min_seconds=14, n_racers=None,
                      cols=None, rows=None, forced_racers=None):
-    """Same procedural maze/physics/racer-icon system as simulate_race, and a
-    race-to-finish objective still at its heart, but under mounting pressure
-    from a closing arena: three kinematic 'zone' walls (top, left, right)
-    physically sweep inward over the match — a racer literally can't cross
-    one, and gets carried/squeezed along by it if caught against it — while
-    the bottom stays open onto the same finish zone simulate_race uses, so
-    the closing walls funnel everyone toward it instead of just shrinking to
-    a static center. Weapon pickups let an armed racer THROW an unarmed one
-    on collision (a strong knockback impulse, not a damage tick); slamming
-    into any wall while still airborne from a throw is what actually
-    eliminates a racer. A racer stuck on the wrong side of the zone for too
-    long (BATTLE_STORM_KILL_SECONDS) is also eliminated outright — a ported
-    version of weapon-ball-arena's "storm" chip damage, needed because the
-    closing wall stops moving once it reaches its final position, and
-    being a full-width solid barrier it can never be walked around, so
-    without this a straggler caught behind it at that point was stuck
-    there permanently (see the outside_zone_steps check below). First to
-    the finish wins outright; if nobody makes it, the last racer standing
-    (or closest to the finish, on a time-out) does."""
+    """Race and combat inside a maze overtaken by a descending storm.
+
+    The danger boundary is passable so racers can escape through real maze
+    passages. Continuous exposure for BATTLE_STORM_KILL_SECONDS eliminates
+    a racer; returning to safety resets the timer. Finish first or outlast
+    the field. Resolve immediately when only one racer remains.
+    """
+    _validate_simulation(w, h, fps, max_seconds, min_seconds, n_racers, forced_racers)
     rng = random.Random(seed)
     theme = pick_theme(seed)
 
@@ -1338,26 +1426,7 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=32, min_seconds=14, n_racers
     half_w_start = (right - left) / 2
 
     def _zone_state(t_now):
-        """Returns (top_y, left_x, right_x, vy, vx) for the closing zone at
-        time t_now — position AND an analytic constant velocity, so a racer
-        caught against the wall is carried along by it (pymunk's
-        kinematic-vs-dynamic contact resolution uses the kinematic body's
-        velocity, not just its position delta).
-
-        Only the TOP wall actually closes in; left/right stay pinned at the
-        full arena width. A first version also narrowed left/right toward
-        a fixed center corridor, but that's a purely geometric rectangle
-        with no idea where the maze's actual corridors run — the moment it
-        narrowed past whatever column the one true path to the finish
-        happened to route through, a racer on the wrong side was walled
-        off from the finish *permanently*, not just delayed (confirmed via
-        batch simulation: racers stuck motionless for 15+ seconds, not the
-        few-second stalls the progress-nudge above is built to clear). A
-        top-only wall can't do this: the finish sits at the maze's max-y
-        row, so BFS distance to it strictly decreases with y regardless of
-        column, and the wall only ever excludes the region *above* itself
-        — never the only route to a cell that's further down.
-        """
+        """Storm boundary and its velocity, without an impassable collider."""
         frac = min(1.0, max(0.0, (t_now - shrink_start) / shrink_dur))
         top_y = top + frac * (top_end_y - top)
         moving = shrink_start <= t_now <= shrink_end
@@ -1383,41 +1452,12 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=32, min_seconds=14, n_racers
         space.add(seg)
 
     fzx, fzy = geo.finish_zone_center(finish_col)
-    finish_shape = pymunk.Circle(space.static_body, geo.cell * 0.55, offset=(fzx, fzy))
-    finish_shape.sensor = True
-    finish_shape.collision_type = FINISH_TYPE
-    space.add(finish_shape)
+    _add_finish_sensor(space, geo)
 
-    # Closing zone walls: three kinematic bodies (top, left, right — bottom
-    # stays open onto the finish). collision_type=WALL_TYPE so they get the
-    # same bump SFX/flash and the same "flying into a wall" elimination
-    # check as the maze's own static walls.
-    zone_span = max(right - left, bottom - top) * 1.2
-    top_wall_body = pymunk.Body(body_type=pymunk.Body.KINEMATIC)
-    top_wall_shape = pymunk.Segment(top_wall_body, (-zone_span / 2, 0), (zone_span / 2, 0), geo.wall_thickness / 2)
-    top_wall_shape.elasticity = 0.35
-    top_wall_shape.friction = 0.5
-    top_wall_shape.collision_type = WALL_TYPE
-    top_wall_body.position = (zone_cx, top)
-    space.add(top_wall_body, top_wall_shape)
-
-    left_wall_body = pymunk.Body(body_type=pymunk.Body.KINEMATIC)
-    left_wall_shape = pymunk.Segment(left_wall_body, (0, -(bottom - top) / 2), (0, (bottom - top) / 2),
-                                      geo.wall_thickness / 2)
-    left_wall_shape.elasticity = 0.35
-    left_wall_shape.friction = 0.5
-    left_wall_shape.collision_type = WALL_TYPE
-    left_wall_body.position = (left, zone_cy)
-    space.add(left_wall_body, left_wall_shape)
-
-    right_wall_body = pymunk.Body(body_type=pymunk.Body.KINEMATIC)
-    right_wall_shape = pymunk.Segment(right_wall_body, (0, -(bottom - top) / 2), (0, (bottom - top) / 2),
-                                       geo.wall_thickness / 2)
-    right_wall_shape.elasticity = 0.35
-    right_wall_shape.friction = 0.5
-    right_wall_shape.collision_type = WALL_TYPE
-    right_wall_body.position = (right, zone_cy)
-    space.add(right_wall_body, right_wall_shape)
+    # The storm is a timed hazard, not a solid moving collider. A solid
+    # full-width wall squeezes racers against internal maze walls and
+    # blocks their only escape back into safety. Ordinary arena walls
+    # still collide normally; the storm is rendered from _zone_state.
 
     # Circle collision body (NOT square, unlike race mode's racers) --
     # tried square/spinning collisions here too for reference-matching
@@ -1465,6 +1505,7 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=32, min_seconds=14, n_racers
     RECOVERY_STEPS = int(0.30 * PHYSICS_HZ)
     RECOVERY_MIN_STEER_MULT = 0.12
     recovery_until = [0] * n_racers
+    motion_recovery = _MotionRecovery(n_racers)
     DECISION_STEPS = int(0.5 * PHYSICS_HZ)
     next_decision = [0] * n_racers
     JUNCTION_HESITATE_STEPS = int(0.15 * PHYSICS_HZ)
@@ -1489,14 +1530,35 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=32, min_seconds=14, n_racers
     DANGER_RADIUS = geo.cell * 4
     AWARENESS_CHASE = geo.cell * 6
 
-    def _greedy_step(candidates, point, maximize=False):
-        def key(n):
-            px, py = geo.cell_center(*n)
-            return math.hypot(px - point[0], py - point[1])
-        return (max if maximize else min)(candidates, key=key)
+    route_fields = {}
+
+    def _route_to(cell, point, flee=False):
+        """Navigate actual maze passages, including a goal in this cell.
+
+        Euclidean greedy steps oscillate at U-shaped walls. They also walk
+        away from a pickup as soon as its cell is entered, before collecting
+        it. A cached BFS field solves both cases without changing collisions.
+        """
+        goal = (min(rows - 1, max(0, int((point[1] - geo.top_border) / geo.cell))),
+                min(cols - 1, max(0, int((point[0] - geo.border_w) / geo.cell))))
+        if cell == goal and not flee:
+            return point
+        if goal not in route_fields:
+            route_fields[goal] = bfs_distance_field(open_right, open_down, cols, rows, goal)
+        field = route_fields[goal]
+        choices = open_neighbors(*cell, open_right, open_down, cols, rows)
+        choices = [p for p in choices if field[p[0]][p[1]] is not None]
+        if not choices:
+            return geo.cell_center(*cell)
+        chosen = (max if flee else min)(choices, key=lambda p: field[p[0]][p[1]])
+        return geo.cell_center(*chosen)
 
     def _eliminate(i, step):
         if eliminated[i] or finished[i]:
+            return
+        # Once only one racer is left the result is settled. Do not kill
+        # that survivor while waiting for a video minimum-duration target.
+        if not finish_log and sum(active) <= 1:
             return
         eliminated[i] = True
         active[i] = False
@@ -1528,7 +1590,7 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=32, min_seconds=14, n_racers
         # since a real exit can require moving through an open neighbor
         # cell that isn't a straight line toward that point at all.
         top_y, s_left, s_right, _vy, _vx = _zone_state(step_counter["n"] / PHYSICS_HZ)
-        if x < s_left or x > s_right or y < top_y:
+        if x < s_left or x > s_right or y < top_y + geo.cell:
             best = min(dist_field[nr][nc] for (nr, nc) in candidates)
             best_candidates = [n for n in candidates if dist_field[n[0]][n[1]] == best]
             target[i] = geo.cell_center(*per_racer_rng[i].choice(best_candidates))
@@ -1539,11 +1601,13 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=32, min_seconds=14, n_racers
             for k in range(n_pickups):
                 if pickup_collected[k]:
                     continue
+                if pickup_pos[k][1] < top_y + geo.racer_radius:
+                    continue
                 d = math.hypot(pickup_pos[k][0] - x, pickup_pos[k][1] - y)
                 if d < best_d:
                     best_pickup, best_d = pickup_pos[k], d
             if best_pickup is not None:
-                target[i] = geo.cell_center(*_greedy_step(candidates, best_pickup))
+                target[i] = _route_to((r, c), best_pickup)
                 return len(candidates) > 1
             best_enemy, best_d = None, DANGER_RADIUS
             for j in range(n_racers):
@@ -1554,7 +1618,7 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=32, min_seconds=14, n_racers
                 if d < best_d:
                     best_enemy, best_d = (epos.x, epos.y), d
             if best_enemy is not None:
-                target[i] = geo.cell_center(*_greedy_step(candidates, best_enemy, maximize=True))
+                target[i] = _route_to((r, c), best_enemy, flee=True)
                 return len(candidates) > 1
         else:
             best_enemy, best_d = None, AWARENESS_CHASE
@@ -1566,7 +1630,7 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=32, min_seconds=14, n_racers
                 if d < best_d:
                     best_enemy, best_d = (epos.x, epos.y), d
             if best_enemy is not None:
-                target[i] = geo.cell_center(*_greedy_step(candidates, best_enemy))
+                target[i] = _route_to((r, c), best_enemy)
                 return len(candidates) > 1
 
         best = min(dist_field[nr][nc] for (nr, nc) in candidates)
@@ -1682,13 +1746,6 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=32, min_seconds=14, n_racers
         t_now = step_counter["n"] * dt
 
         top_y, s_left, s_right, vy, vx = _zone_state(t_now)
-        top_wall_body.position = (zone_cx, top_y)
-        top_wall_body.velocity = (0, vy)
-        left_wall_body.position = (s_left, zone_cy)
-        left_wall_body.velocity = (vx, 0)
-        right_wall_body.position = (s_right, zone_cy)
-        right_wall_body.velocity = (-vx, 0)
-
         for i in range(n_racers):
             if not active[i]:
                 continue
@@ -1719,34 +1776,24 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=32, min_seconds=14, n_racers
                 _battle_recompute_target(i)
                 next_decision[i] = step_counter["n"] + DECISION_STEPS
 
-            # If the closing zone has already swept past this racer's
-            # position, force a fresh (maze-graph-based, always-reachable)
-            # target every step instead of waiting for the next cell-change
-            # or decision tick — the kinematic wall alone will eventually
-            # push a racer clear, but letting its steering keep fighting
-            # for a pickup/enemy on the wrong side for a second or two first
-            # is what read as the racer visibly sitting inside the tinted
-            # danger area instead of being cleanly excluded from it.
+            # Recompute escape paths promptly when the storm reaches a
+            # racer. The boundary is passable; steering must also stop
+            # chasing an item or opponent back into the danger area.
             outside_zone = x < s_left or x > s_right or y < top_y
             if outside_zone:
                 _battle_recompute_target(i)
                 outside_zone_steps[i] += 1
                 if outside_zone_steps[i] >= BATTLE_STORM_KILL_STEPS:
-                    # Storm kill (ported concept from weapon-ball-arena's
-                    # shrinking-arena "storm" chip damage): the sweeping
-                    # wall carries a caught racer along, but once it
-                    # finishes closing and stops, nothing pushes a
-                    # straggler the rest of the way — it's a full-width
-                    # solid barrier with no gap, so being stuck behind it
-                    # was a permanent, unresolved state (batch-confirmed:
-                    # ~9% of battles timed out with everyone alive, frozen
-                    # just behind the halted wall). A continuous-time-outside
-                    # timer guarantees the match always resolves.
+                    # Bound continuous exposure even if no safe route
+                    # remains. Elimination uses the same event/result path
+                    # as combat, so the ranking and animation stay aligned.
                     _eliminate(i, step_counter["n"])
                     continue
             else:
                 outside_zone_steps[i] = 0
-            tx, ty = target[i]
+            waypoint = motion_recovery.waypoint(i, step_counter["n"], geo, last_cell[i],
+                bodies, active, open_right, open_down, target[i])
+            tx, ty = _corridor_waypoint(geo, last_cell[i], (x, y), waypoint, space)
             dx, dy = tx - x, ty - y
             dist = math.hypot(dx, dy) or 1.0
             speed_scale = min(1.0, max(0.35, dist / SLOWDOWN_RADIUS))
@@ -1770,6 +1817,7 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=32, min_seconds=14, n_racers
             bodies[i].apply_force_at_world_point((fx, fy), bodies[i].position)
 
         space.step(dt)
+        _remove_inactive(space, bodies, shapes, active)
 
         if step_counter["n"] % STUCK_CHECK_STEPS == 0:
             for i in range(n_racers):
@@ -1840,7 +1888,9 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=32, min_seconds=14, n_racers
                 else:
                     pos.append(None)
             n_alive_now = sum(1 for a in active if a)
-            frames.append({"pos": pos, "active": list(active), "armed": list(armed), "n_alive": n_alive_now})
+            frames.append({"pos": pos, "active": list(active), "armed": list(armed), "n_alive": n_alive_now,
+                           "n_finished": len(finish_log), "step": step_counter["n"],
+                           "storm_exposure": [s / PHYSICS_HZ for s in outside_zone_steps]})
             frame_idx += 1
 
             if finish_log and finish_log[-1][0] > step_counter["n"] - steps_per_frame:
@@ -1858,14 +1908,7 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=32, min_seconds=14, n_racers
                 best = max(recent_bumps, key=lambda b: b[3])
                 bump_frame_flags[frame_idx - 1] = (best[1], best[2], best[3], best[4])
 
-            for i in range(n_racers):
-                if (finished[i] or eliminated[i]) and shapes[i] in space.shapes:
-                    try:
-                        space.remove(bodies[i], shapes[i])
-                    except Exception:
-                        pass
-
-            if step_counter["n"] >= min_steps and (finish_log or sum(1 for a in active if a) <= 1):
+            if finish_log or sum(active) <= 1:
                 break
 
     def _progress(i):
@@ -1884,9 +1927,10 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=32, min_seconds=14, n_racers
             winner_idx = elim_log[-1][1] if elim_log else 0
 
     eliminated_order = [el[1] for el in elim_log]
+    other_finishers = [fl[1] for fl in finish_log if fl[1] != winner_idx]
     remaining_alive = sorted((i for i in range(n_racers) if active[i] and i != winner_idx), key=_progress)
     remaining_eliminated = [i for i in reversed(eliminated_order) if i != winner_idx]
-    full_ranking = [winner_idx] + remaining_alive + remaining_eliminated
+    full_ranking = [winner_idx] + other_finishers + remaining_alive + remaining_eliminated
 
     finale_frames = int(1.6 * fps)
     if frames:
@@ -1905,6 +1949,9 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=32, min_seconds=14, n_racers
         "winner_idx": winner_idx,
         "winner_name": racers[winner_idx]["name"],
         "winner_finished": winner_idx in [fl[1] for fl in finish_log],
+        "result_reason": ("finish" if finish_log else "last_standing" if sum(active) == 1 else "timeout"),
+        "finish_order": [fl[1] for fl in finish_log],
+        "n_finished_total": len(finish_log),
         "full_ranking": full_ranking,
         "pickup_pos": pickup_pos,
         "pickup_collect_step": pickup_collect_step,
@@ -2035,7 +2082,13 @@ def _build_drop_pegs(kind, peg_rng, left, right, top_y, finish_y, h, racer_radiu
                 jx = peg_rng.uniform(-peg_radius * 0.35, peg_radius * 0.35)
                 jy = peg_rng.uniform(-peg_radius * 0.35, peg_radius * 0.35)
                 px, py = x + jx, y + jy
-                pegs.append((px, py, DROP_OBSTACLE_COLORS[len(pegs) % len(DROP_OBSTACLE_COLORS)]))
+                # Leave a full racer-width lane around the blade sweep.
+                # A rotating solid blade must not crush racers into pegs.
+                clearance = peg_radius * 1.8 + racer_radius * 2.5
+                if all(math.hypot(px - cx, py - (top_y + (finish_y - top_y) * frac))
+                       >= track_w * length / 2 + clearance
+                       for frac, length in DROP_ARENA_SPINNERS[kind]):
+                    pegs.append((px, py, DROP_OBSTACLE_COLORS[len(pegs) % len(DROP_OBSTACLE_COLORS)]))
             x += col_spacing
             col_i += 1
         y += row_spacing
@@ -2048,6 +2101,7 @@ def simulate_drop(w, h, seed, fps=24, max_seconds=22, min_seconds=8, n_racers=No
     each physics step is just space.step(dt) plus bookkeeping. Camera later
     follows whichever racer is currently furthest down, the same 'leader'
     idea build_race_clip already uses for its own camera."""
+    _validate_simulation(w, h, fps, max_seconds, min_seconds, n_racers, forced_racers)
     rng = random.Random(seed)
 
     if forced_racers is not None:
@@ -2198,6 +2252,7 @@ def simulate_drop(w, h, seed, fps=24, max_seconds=22, min_seconds=8, n_racers=No
     while step_counter["n"] < max_steps:
         step_counter["n"] += 1
         space.step(dt)
+        _remove_inactive(space, bodies, shapes, active)
 
         if step_counter["n"] % steps_per_frame == 0:
             pos = []
@@ -2207,7 +2262,7 @@ def simulate_drop(w, h, seed, fps=24, max_seconds=22, min_seconds=8, n_racers=No
                     pos.append((b.position.x, b.position.y, -math.degrees(b.angle)))
                 else:
                     pos.append(None)
-            frames.append({"pos": pos, "active": list(active),
+            frames.append({"pos": pos, "active": list(active), "n_finished": len(finish_log), "step": step_counter["n"],
                             "blade_angles": [-math.degrees(bl["body"].angle) for bl in blades]})
             frame_idx += 1
 
@@ -2221,14 +2276,7 @@ def simulate_drop(w, h, seed, fps=24, max_seconds=22, min_seconds=8, n_racers=No
                 best = max(recent_bumps, key=lambda b: b[3])
                 bump_frame_flags[frame_idx - 1] = (best[1], best[2], best[3], best[4])
 
-            for i in range(n_racers):
-                if finished[i] and shapes[i] in space.shapes:
-                    try:
-                        space.remove(bodies[i], shapes[i])
-                    except Exception:
-                        pass
-
-            if finish_log and step_counter["n"] >= min_steps:
+            if not any(active) or (finish_log and step_counter["n"] >= min_steps):
                 break
 
     if winner_idx_box[0] is not None:
@@ -2261,6 +2309,9 @@ def simulate_drop(w, h, seed, fps=24, max_seconds=22, min_seconds=8, n_racers=No
         "winner_idx": winner_idx,
         "winner_name": racers[winner_idx]["name"],
         "winner_finished": winner_idx in finished_order_list,
+        "result_reason": "finish" if finished_order_list else "timeout",
+        "finish_order": finished_order_list,
+        "n_finished_total": len(finish_log),
         "full_ranking": full_ranking,
         "pegs": pegs,
         "peg_radius": peg_radius,
@@ -2308,33 +2359,10 @@ def build_drop_clip(race):
     HUD_MARGIN = int(h * 0.13)
     viewport_h = h - HUD_MARGIN
 
-    CAMERA_SMOOTH = 0.06
-    LEAD_FRAC = 0.36
-    camera_tops = []
-    _prev = None
-    for fr in frames:
-        alive_y = [p[1] for p in fr["pos"] if p is not None]
-        lead_y = max(alive_y) if alive_y else track_img_h * 0.5
-        if _prev is None:
-            _prev = lead_y
-        else:
-            _prev = _prev + CAMERA_SMOOTH * (lead_y - _prev)
-        cam_top = _prev - viewport_h * LEAD_FRAC
-        cam_top = max(0.0, min(cam_top, max(0.0, track_img_h - viewport_h)))
-        camera_tops.append(cam_top)
+    camera_tops = _camera_positions(race, track_img_h, viewport_h, average=False)
+    accent = (80, 198, 246)
 
-    title_font = get_font(int(h * 0.032))
-    counter_font = get_font(int(h * 0.028))
-    win_font = get_font(int(h * 0.052))
-    count_font = get_font(int(h * 0.11))
     finish_pop_font = get_font(int(h * 0.020))
-
-    title_text = f"{n}-Way Marble Drop"
-    win_text_template = (_pick_variant(race["seed"], "wintext", WIN_TEXT_TEMPLATES) if race["winner_finished"]
-                          else _pick_variant(race["seed"], "timeoutwintext", TIMEOUT_WIN_TEXT_TEMPLATES))
-    win_text = win_text_template.format(name=race["winner_name"])
-    win_font = _fit_text_font(win_text, win_font, w * 0.94)
-    go_word = _pick_variant(race["seed"], "goword", FIGHT_WORD_TEMPLATES)
 
     ambient_particles = _make_ambient_particles(race["seed"], 14, w, h)
     intro_frames = int(INTRO_SECONDS * fps)
@@ -2361,9 +2389,9 @@ def build_drop_clip(race):
             bcolor = bl["color"]
             bdark = tuple(max(0, c - 60) for c in bcolor)
             d.line([(bx - dx, ry - dy), (bx + dx, ry + dy)], fill=(*bcolor, 255),
-                   width=int(bl["thickness"]))
+                   width=max(1, int(bl["thickness"] * 2)))
             for sign in (-1, 1):
-                d.ellipse([bx + sign * dx - 5, ry + sign * dy - 5, bx + sign * dx + 5, ry + sign * dy + 5],
+                d.ellipse([bx + sign * dx - bl["thickness"], ry + sign * dy - bl["thickness"], bx + sign * dx + bl["thickness"], ry + sign * dy + bl["thickness"]],
                           fill=(*bdark, 255))
         fin_ry = finish_y - crop_top
         if 0 <= fin_ry <= img.height:
@@ -2395,13 +2423,6 @@ def build_drop_clip(race):
             r = p["r"]
             alpha = int(50 + 90 * twinkle)
             d.ellipse([p["x"] - r, p["y"] - r, p["x"] + r, p["y"] + r], fill=(255, 255, 255, alpha))
-
-        d.rectangle([0, 0, w, HUD_MARGIN], fill=(20, 20, 26, 235))
-        tw = d.textlength(title_text, font=title_font)
-        d.text((w / 2 - tw / 2, h * 0.02), title_text, font=title_font, fill=(255, 255, 255, 255))
-        counter_text = "GRAVITY DOES THE REST"
-        cw = d.textlength(counter_text, font=counter_font)
-        d.text((w / 2 - cw / 2, h * 0.075), counter_text, font=counter_font, fill=(255, 220, 60, 255))
 
         if not in_intro:
             for fi in range(max(0, idx - 6), idx + 1):
@@ -2441,28 +2462,11 @@ def build_drop_clip(race):
             icon = icons[i].rotate(ang, resample=Image.BICUBIC)
             img.alpha_composite(icon, (int(x - icon.width / 2), int(ry - icon.height / 2)))
 
+        _draw_video_hud(img, race, st, "MARBLE DROP", accent, in_intro, idx >= finale_start and not in_intro)
         if in_intro:
-            phase = t / INTRO_SECONDS * 3
-            if phase < 1:
-                num = "3"
-            elif phase < 2:
-                num = "2"
-            elif phase < 2.6:
-                num = "1"
-            else:
-                num = go_word
-            cw2 = d.textlength(num, font=count_font)
-            d.text((w / 2 - cw2 / 2, h * 0.42), num, font=count_font, fill=(255, 255, 255, 255),
-                   stroke_width=6, stroke_fill=(0, 0, 0, 255))
-
-        if idx >= finale_start and not in_intro:
-            win_text = win_text_template.format(name=race["winner_name"])
-            fade_in = min(1.0, (idx - finale_start) / (fps * 0.3))
-            wa = int(255 * fade_in)
-            wtw = d.textlength(win_text, font=win_font)
-            d.rectangle([0, h * 0.42, w, h * 0.42 + h * 0.10], fill=(0, 0, 0, int(150 * fade_in)))
-            d.text((w / 2 - wtw / 2, h * 0.44), win_text, font=win_font, fill=(255, 215, 60, wa),
-                   stroke_width=5, stroke_fill=(0, 0, 0, wa))
+            _draw_countdown(img, t, accent)
+        elif idx >= finale_start:
+            _draw_result_card(img, race, (idx - finale_start) / (fps * 0.3), accent)
 
         return np.array(img.convert("RGB"))
 
@@ -2503,6 +2507,90 @@ def _fit_text_font(text, font, max_w):
     return font
 
 
+def _camera_positions(race, world_h, viewport_h, lead_frac=0.36, average=False):
+    """Keep the finish in view when its racer disappears from active bodies."""
+    tops, previous = [], None
+    finish_y = None
+    smoothing = 1 - (1 - 0.06) ** (60 / race["fps"])
+    for idx, frame in enumerate(race["frames"]):
+        events = race.get("finish_frame_flags", {}).get(idx, [])
+        if events and finish_y is None:
+            finish_y = events[0][2]
+        points = [p[1] for p in frame["pos"] if p is not None]
+        lead = (sum(points) / len(points) if average else max(points)) if points else previous
+        if finish_y is not None:
+            lead = finish_y
+        if lead is None:
+            lead = 0.0
+        previous = lead if previous is None else previous + smoothing * (lead - previous)
+        tops.append(max(0.0, min(previous - viewport_h * lead_frac, max(0.0, world_h - viewport_h))))
+    return tops
+
+
+def _draw_video_hud(img, race, frame, mode, accent, in_intro=False, is_final=False):
+    w, h = img.size
+    height, pad = int(h * 0.13), int(min(w, h) * 0.04)
+    d = ImageDraw.Draw(img)
+    d.rectangle((0, 0, w, height), fill=(15, 20, 31, 255))
+    status = "GET READY" if in_intro else "RESULT" if is_final else "LIVE"
+    d.text((pad, height * 0.08), "MARBLE RACE  /  " + status,
+           font=get_font(max(10, int(height * 0.12))), fill=(157, 173, 194, 255))
+    title_font = _fit_text_font(mode, get_font(int(height * 0.29)), w * 0.64)
+    d.text((pad, height * 0.28), mode, font=title_font, fill=(245, 248, 255, 255))
+    if mode == "BATTLE ROYALE":
+        detail = f"{frame.get('n_alive', race['n_racers'])} IN PLAY  /  {race['n_racers']} RACERS"
+    else:
+        detail = f"{frame.get('n_finished', 0)} FINISHED  /  {race['n_racers']} RACERS"
+    d.text((pad, height * 0.72), detail, font=get_font(max(10, int(height * 0.14))), fill=(*accent, 255))
+    elapsed = 0 if in_intro else frame.get("step", 0) / PHYSICS_HZ
+    timer = f"{elapsed:04.1f}s"
+    font = get_font(max(12, int(height * 0.24)))
+    tw = d.textlength(timer, font=font)
+    box = (w - tw - pad * 1.6, height * 0.30, w - pad, height * 0.72)
+    d.rounded_rectangle(box, radius=max(4, height * 0.07), fill=(29, 39, 55, 255))
+    d.text((box[0] + pad * 0.3, height * 0.35), timer, font=font, fill=(239, 246, 255, 255))
+    d.rectangle((0, height - max(2, int(h * 0.002)), w, height), fill=(*accent, 255))
+
+
+def _draw_countdown(img, t, accent):
+    phase = t / INTRO_SECONDS * 3
+    label = "3" if phase < 1 else "2" if phase < 2 else "1" if phase < 2.6 else "GO!"
+    w, h = img.size
+    d = ImageDraw.Draw(img)
+    radius = min(w, h) * 0.14
+    cx, cy = w / 2, h * 0.48
+    d.ellipse((cx-radius, cy-radius, cx+radius, cy+radius), fill=(15, 20, 31, 245),
+              outline=(*accent, 255), width=max(2, int(radius * 0.04)))
+    d.text((cx, cy), label, anchor="mm", font=get_font(int(radius * 1.08)), fill=(255, 255, 255, 255))
+
+
+def _draw_result_card(img, race, fade, accent):
+    w, h = img.size
+    card_w = int(w * (0.88 if h >= w else 0.56))
+    card_h = int(min(h * 0.27, card_w * 0.52))
+    x, y = (w-card_w)//2, int(h * 0.43 - card_h / 2)
+    card = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    d = ImageDraw.Draw(card)
+    d.rounded_rectangle((x, y, x+card_w, y+card_h), radius=int(card_h * 0.09),
+                        fill=(15, 20, 31, 248), outline=(*accent, 255), width=max(2, int(w*.003)))
+    reason = race.get("result_reason", "finish" if race["winner_finished"] else "timeout")
+    label = "TIME LIMIT LEADER" if reason == "timeout" else "WINNER"
+    caption = {"finish": "FIRST ACROSS THE LINE", "last_standing": "LAST RACER STANDING",
+               "timeout": "FARTHEST PROGRESS AT TIME-OUT"}[reason]
+    pad = card_w * 0.06
+    icon_size = int(card_h * 0.52)
+    icon = make_racer_icon(race["racers"][race["winner_idx"]]["color"], icon_size)
+    card.alpha_composite(icon, (int(x+pad), int(y+card_h*.32)))
+    tx = x+pad+icon_size+pad*.6
+    d.text((x+pad, y+card_h*.09), label, font=get_font(max(10,int(card_h*.12))), fill=(*accent,255))
+    name_font = _fit_text_font(race["winner_name"], get_font(int(card_h*.26)), x+card_w-pad-tx)
+    d.text((tx, y+card_h*.33), race["winner_name"], font=name_font, fill=(255,255,255,255))
+    font = _fit_text_font(caption, get_font(max(10,int(card_h*.10))), x+card_w-pad-tx)
+    d.text((tx, y+card_h*.70), caption, font=font, fill=(172,190,211,255))
+    card.putalpha(card.getchannel("A").point(lambda v: int(v * min(1,max(0,fade)))))
+    img.alpha_composite(card)
+
+
 # --- Rendering ---------------------------------------------------------
 
 def build_race_clip(race):
@@ -2525,33 +2613,10 @@ def build_race_clip(race):
     viewport_h = h - HUD_MARGIN
     maze_img_h = maze_img.height
 
-    CAMERA_SMOOTH = 0.06
-    LEAD_FRAC = 0.36
-    camera_tops = []
-    _prev = None
-    for fr in frames:
-        alive_y = [p[1] for p in fr["pos"] if p is not None]
-        lead_y = max(alive_y) if alive_y else maze_img_h * 0.5
-        if _prev is None:
-            _prev = lead_y
-        else:
-            _prev = _prev + CAMERA_SMOOTH * (lead_y - _prev)
-        cam_top = _prev - viewport_h * LEAD_FRAC
-        cam_top = max(0.0, min(cam_top, max(0.0, maze_img_h - viewport_h)))
-        camera_tops.append(cam_top)
+    camera_tops = _camera_positions(race, maze_img_h, viewport_h, average=False)
+    accent = (76, 220, 178)
 
-    title_font = get_font(int(h * 0.032))
-    counter_font = get_font(int(h * 0.028))
-    win_font = get_font(int(h * 0.052))
-    count_font = get_font(int(h * 0.11))
     finish_pop_font = get_font(int(h * 0.020))
-
-    title_text = f"{n}-Way Maze Race"
-    win_text_template = (_pick_variant(race["seed"], "wintext", WIN_TEXT_TEMPLATES) if race["winner_finished"]
-                          else _pick_variant(race["seed"], "timeoutwintext", TIMEOUT_WIN_TEXT_TEMPLATES))
-    win_text = win_text_template.format(name=race["winner_name"])
-    win_font = _fit_text_font(win_text, win_font, w * 0.94)
-    go_word = _pick_variant(race["seed"], "goword", FIGHT_WORD_TEMPLATES)
 
     ambient_particles = _make_ambient_particles(race["seed"], 14, w, h)
     intro_frames = int(INTRO_SECONDS * fps)
@@ -2576,14 +2641,6 @@ def build_race_clip(race):
             r = p["r"]
             alpha = int(30 + 70 * twinkle)
             d.ellipse([p["x"] - r, p["y"] - r, p["x"] + r, p["y"] + r], fill=(*theme["particle"], alpha))
-
-        d.rectangle([0, 0, w, HUD_MARGIN], fill=(20, 20, 26, 235))
-        tw = d.textlength(title_text, font=title_font)
-        d.text((w / 2 - tw / 2, h * 0.02), title_text, font=title_font, fill=(255, 255, 255, 255))
-        n_fin = st.get("n_finished", 0)
-        counter_text = f"FINISHED: {n_fin}/{n}"
-        cw = d.textlength(counter_text, font=counter_font)
-        d.text((w / 2 - cw / 2, h * 0.075), counter_text, font=counter_font, fill=(*theme["accent"], 255))
 
         if not in_intro:
             for fi in range(max(0, idx - 6), idx + 1):
@@ -2620,36 +2677,14 @@ def build_race_clip(race):
             ry = y - crop_top + HUD_MARGIN
             if ry < HUD_MARGIN - ICON_SIZE or ry > h + ICON_SIZE:
                 continue
-            icon = icons[i].rotate(-ang, resample=Image.BICUBIC)
+            icon = icons[i].rotate(ang, resample=Image.BICUBIC)
             img.alpha_composite(icon, (int(x - icon.width / 2), int(ry - icon.height / 2)))
 
+        _draw_video_hud(img, race, st, "MAZE RACE", accent, in_intro, idx >= finale_start and not in_intro)
         if in_intro:
-            remaining = INTRO_SECONDS - t
-            if remaining > 0.7:
-                num = "3"
-            elif remaining > 0.35 if INTRO_SECONDS > 1.4 else False:
-                num = "2"
-            phase = t / INTRO_SECONDS * 3
-            if phase < 1:
-                num = "3"
-            elif phase < 2:
-                num = "2"
-            elif phase < 2.6:
-                num = "1"
-            else:
-                num = go_word
-            cw2 = d.textlength(num, font=count_font)
-            d.text((w / 2 - cw2 / 2, h * 0.42), num, font=count_font, fill=(255, 255, 255, 255),
-                   stroke_width=6, stroke_fill=(0, 0, 0, 255))
-
-        if idx >= finale_start and not in_intro:
-            win_text = win_text_template.format(name=race["winner_name"])
-            fade_in = min(1.0, (idx - finale_start) / (fps * 0.3))
-            wa = int(255 * fade_in)
-            wtw = d.textlength(win_text, font=win_font)
-            d.rectangle([0, h * 0.42, w, h * 0.42 + h * 0.10], fill=(0, 0, 0, int(150 * fade_in)))
-            d.text((w / 2 - wtw / 2, h * 0.44), win_text, font=win_font, fill=(255, 215, 60, wa),
-                   stroke_width=5, stroke_fill=(0, 0, 0, wa))
+            _draw_countdown(img, t, accent)
+        elif idx >= finale_start:
+            _draw_result_card(img, race, (idx - finale_start) / (fps * 0.3), accent)
 
         arr = np.array(img.convert("RGB"))
 
@@ -2672,7 +2707,7 @@ def build_race_clip(race):
                 shake_dx += math.cos(jr * 6.283) * amt
                 shake_dy += math.sin(jr * 6.283) * amt
             if shake_dx or shake_dy:
-                arr = np.roll(arr, (int(round(shake_dy)), int(round(shake_dx))), axis=(0, 1))
+                arr[HUD_MARGIN:] = np.roll(arr[HUD_MARGIN:], (int(round(shake_dy)), int(round(shake_dx))), axis=(0, 1))
 
         return arr
 
@@ -2703,10 +2738,8 @@ def build_battle_clip(race):
     maze_img = race["maze_img"].convert("RGBA")
     finale_start = race["finale_start"]
     n_frames = len(frames)
-    steps_per_frame = race["steps_per_frame"]
     zone_state_fn = race["zone_state_fn"]
     zone_top, zone_bottom = race["zone_bounds"]
-    max_seconds = race["max_seconds"]
 
     ICON_SIZE = int(geo.racer_radius * 2.6)
     icons_unarmed = [make_racer_icon(r["color"], ICON_SIZE, armed=False) for r in racers]
@@ -2718,33 +2751,10 @@ def build_battle_clip(race):
     viewport_h = h - HUD_MARGIN
     maze_img_h = maze_img.height
 
-    CAMERA_SMOOTH = 0.06
-    LEAD_FRAC = 0.5
-    camera_tops = []
-    _prev = None
-    for fr in frames:
-        alive_pts = [p for p in fr["pos"] if p is not None]
-        lead_y = (sum(p[1] for p in alive_pts) / len(alive_pts)) if alive_pts else maze_img_h * 0.5
-        if _prev is None:
-            _prev = lead_y
-        else:
-            _prev = _prev + CAMERA_SMOOTH * (lead_y - _prev)
-        cam_top = _prev - viewport_h * LEAD_FRAC
-        cam_top = max(0.0, min(cam_top, max(0.0, maze_img_h - viewport_h)))
-        camera_tops.append(cam_top)
+    camera_tops = _camera_positions(race, maze_img_h, viewport_h, average=True)
+    accent = (255, 157, 94)
 
-    title_font = get_font(int(h * 0.032))
-    counter_font = get_font(int(h * 0.028))
-    win_font = get_font(int(h * 0.052))
-    count_font = get_font(int(h * 0.11))
     elim_pop_font = get_font(int(h * 0.020))
-
-    title_text = f"{n}-Way Battle Royale"
-    win_text_template = (_pick_variant(race["seed"], "wintext", WIN_TEXT_TEMPLATES) if race["winner_finished"]
-                          else _pick_variant(race["seed"], "battlewintext", BATTLE_WIN_TEXT_TEMPLATES))
-    win_text = win_text_template.format(name=race["winner_name"])
-    win_font = _fit_text_font(win_text, win_font, w * 0.94)
-    go_word = _pick_variant(race["seed"], "goword", FIGHT_WORD_TEMPLATES)
 
     ambient_particles = _make_ambient_particles(race["seed"], 14, w, h)
     intro_frames = int(INTRO_SECONDS * fps)
@@ -2777,14 +2787,11 @@ def build_battle_clip(race):
             # way down to the finish) — cut on a plain (non-blending) draw
             # context so the punch is a real overwrite-to-transparent
             # rather than a 0-alpha no-op blend.
-            t_phys = min(max_seconds, idx * steps_per_frame / PHYSICS_HZ)
+            t_phys = st["step"] / PHYSICS_HZ
             top_y, s_left, s_right, _vy, _vx = zone_state_fn(t_phys)
-            # Punch the hole a half-wall-thickness past each wall's
-            # centerline (toward the danger side) — the wall itself
-            # occupies that band, so a racer resting against its safe-side
-            # face still renders cleanly inside the untinted area instead
-            # of looking like it's standing in the danger tint.
-            wt_margin = geo.wall_thickness / 2
+            # Tint uses the same boundary as exposure detection. There is
+            # no hidden solid wall or offset between visuals and physics.
+            wt_margin = 0
             danger = Image.new("RGBA", (w, h), (0, 0, 0, 0))
             dd = ImageDraw.Draw(danger)
             arena_top_sy = max(HUD_MARGIN, zone_top - crop_top + HUD_MARGIN)
@@ -2796,23 +2803,23 @@ def build_battle_clip(race):
                 dd.rectangle([s_left - wt_margin, safe_sy0, s_right + wt_margin, arena_bottom_sy], fill=(0, 0, 0, 0))
             img.alpha_composite(danger)
             d = ImageDraw.Draw(img, "RGBA")
+            boundary_y = top_y - crop_top + HUD_MARGIN
+            if HUD_MARGIN < boundary_y < h:
+                d.line((s_left, boundary_y, s_right, boundary_y), fill=(255, 93, 90, 255),
+                       width=max(2, int(w * 0.005)))
+                label_font = get_font(max(10, int(h * 0.018)))
+                label_y = max(HUD_MARGIN + 5, boundary_y - h * 0.031)
+                d.text((s_left + w * 0.018, label_y), "DANGER ZONE / MOVE DOWN", font=label_font,
+                       fill=(255, 245, 235, 255), stroke_width=2, stroke_fill=(111, 24, 34, 255))
 
             for k, (px, py) in enumerate(race["pickup_pos"]):
                 collect_step = race["pickup_collect_step"][k]
-                if collect_step is not None and idx * steps_per_frame >= collect_step:
+                if collect_step is not None and st["step"] >= collect_step:
                     continue
                 ry = py - crop_top + HUD_MARGIN
                 bob = math.sin(t * 3.0 + k * 1.3) * geo.cell * 0.06
                 img.alpha_composite(weapon_icon, (int(px - weapon_icon.width / 2),
                                                     int(ry + bob - weapon_icon.height / 2)))
-
-        d.rectangle([0, 0, w, HUD_MARGIN], fill=(20, 20, 26, 235))
-        tw = d.textlength(title_text, font=title_font)
-        d.text((w / 2 - tw / 2, h * 0.02), title_text, font=title_font, fill=(255, 255, 255, 255))
-        n_alive = st.get("n_alive", n)
-        counter_text = f"ALIVE: {n_alive}/{n}"
-        cw = d.textlength(counter_text, font=counter_font)
-        d.text((w / 2 - cw / 2, h * 0.075), counter_text, font=counter_font, fill=(*theme["accent"], 255))
 
         if not in_intro:
             for fi in range(max(0, idx - 6), idx + 1):
@@ -2867,29 +2874,22 @@ def build_battle_clip(race):
             icon_set = icons_armed if is_armed else icons_unarmed
             icon = icon_set[i].rotate(-ang, resample=Image.BICUBIC)
             img.alpha_composite(icon, (int(x - icon.width / 2), int(ry - icon.height / 2)))
+            exposure = st.get("storm_exposure", [0] * n)[i]
+            if exposure > 0 and not in_intro:
+                radius = ICON_SIZE * 0.68
+                d.arc((x-radius, ry-radius, x+radius, ry+radius), start=-90,
+                      end=-90 + 360 * min(1, exposure/BATTLE_STORM_KILL_SECONDS),
+                      fill=(255, 70, 76, 255), width=max(2, int(w*.004)))
+                remaining = math.ceil(max(0, BATTLE_STORM_KILL_SECONDS-exposure) * 10) / 10
+                label = f"ESCAPE {remaining:.1f}s"
+                d.text((x, ry-radius-h*.012), label, anchor="mb", font=get_font(max(10,int(h*.017))),
+                       fill=(255,245,235,255), stroke_width=2, stroke_fill=(100,20,30,255))
 
+        _draw_video_hud(img, race, st, "BATTLE ROYALE", accent, in_intro, idx >= finale_start and not in_intro)
         if in_intro:
-            phase = t / INTRO_SECONDS * 3
-            if phase < 1:
-                num = "3"
-            elif phase < 2:
-                num = "2"
-            elif phase < 2.6:
-                num = "1"
-            else:
-                num = go_word
-            cw2 = d.textlength(num, font=count_font)
-            d.text((w / 2 - cw2 / 2, h * 0.42), num, font=count_font, fill=(255, 255, 255, 255),
-                   stroke_width=6, stroke_fill=(0, 0, 0, 255))
-
-        if idx >= finale_start and not in_intro:
-            win_text = win_text_template.format(name=race["winner_name"])
-            fade_in = min(1.0, (idx - finale_start) / (fps * 0.3))
-            wa = int(255 * fade_in)
-            wtw = d.textlength(win_text, font=win_font)
-            d.rectangle([0, h * 0.42, w, h * 0.42 + h * 0.10], fill=(0, 0, 0, int(150 * fade_in)))
-            d.text((w / 2 - wtw / 2, h * 0.44), win_text, font=win_font, fill=(255, 215, 60, wa),
-                   stroke_width=5, stroke_fill=(0, 0, 0, wa))
+            _draw_countdown(img, t, accent)
+        elif idx >= finale_start:
+            _draw_result_card(img, race, (idx - finale_start) / (fps * 0.3), accent)
 
         arr = np.array(img.convert("RGB"))
 
@@ -2908,7 +2908,7 @@ def build_battle_clip(race):
                 shake_dx += math.cos(jr * 6.283) * amt
                 shake_dy += math.sin(jr * 6.283) * amt
             if shake_dx or shake_dy:
-                arr = np.roll(arr, (int(round(shake_dy)), int(round(shake_dx))), axis=(0, 1))
+                arr[HUD_MARGIN:] = np.roll(arr[HUD_MARGIN:], (int(round(shake_dy)), int(round(shake_dx))), axis=(0, 1))
 
         return arr
 
@@ -2982,7 +2982,7 @@ def build_cold_open_clip(race, seconds=COLD_OPEN_SECONDS):
             continue
         x, y, ang = pos
         ry = y - crop_top + HUD_MARGIN
-        icon = icons[i].rotate(-ang, resample=Image.BICUBIC)
+        icon = icons[i].rotate(ang, resample=Image.BICUBIC)
         base_img.alpha_composite(icon, (int(x - icon.width / 2), int(ry - icon.height / 2)))
     base_arr = np.array(base_img.convert("RGB")).astype(np.float32)
 
@@ -3236,9 +3236,9 @@ def build_sfx_array(race):
             buf[pos:end] += sfx[: end - pos] * vol
 
     quarter = INTRO_SECONDS / 3
-    for i in range(2):
+    for i in range(3):
         _add(i * quarter, _beep(700, 0.10, 0.55))
-    _add(2 * quarter, _go_horn())
+    _add(INTRO_SECONDS * 2.6 / 3, _go_horn())
 
     for frame_idx, (bx, by, intensity, kind) in race["bump_frame_flags"].items():
         t = T0 + frame_idx / fps

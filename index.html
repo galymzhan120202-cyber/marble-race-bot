@@ -231,9 +231,33 @@
   .winner-card h2{font-size:22px; margin-bottom:2px;}
   .winner-card p{color:var(--dim); font-size:13px; margin:0 0 20px;}
   .race-controls{display:flex; gap:10px; margin-top:12px;}
+  [hidden]{display:none !important;}
+  button:focus-visible, a:focus-visible{outline:3px solid #75c8ff; outline-offset:4px;}
+  .icon-btn{font:inherit; border:1px solid var(--card-border);}
+  .mode-tile{font:inherit; color:inherit; text-align:left; width:100%; border-radius:18px;}
+  .mode-tile.locked{padding:10px 14px;}
+  .mode-tile.locked p{display:none;}
+  .mode-tile.locked .emoji{font-size:20px;}
+  .mode-list{overflow:visible; gap:10px;}
+  .racer-card{font:inherit; color:inherit;}
+  .race-controls{flex-wrap:wrap;}
+  .race-controls .btn{flex:1; min-width:100px; padding:13px 10px; font-size:14px;}
+  .race-detail{display:flex; justify-content:space-between; gap:8px; padding:0 4px 12px; color:#b4c6dc; font-size:12px;}
+  #race-stage{background:#101722; box-shadow:0 8px 30px rgba(0,0,0,.22);}
+  .kofi-pill{display:none;}
+  body[data-screen="menu"] .kofi-pill{display:flex;}
+  @media (max-height:740px){
+    #screen-menu{padding-top:3vh;}
+    .logo-orb{width:88px; height:88px; margin-bottom:14px;}
+    #screen-menu h1{font-size:34px;}
+    .mode-tile{padding:12px;}
+    .field-box,.arena-box{padding:12px;}
+    .topbar{margin-bottom:12px;}
+  }
+  @media (prefers-reduced-motion:reduce){.screen{animation:none;} *{transition:none !important;}}
 </style>
 </head>
-<body>
+<body data-screen="menu">
 <div id="app">
 
   <!-- ================= MENU ================= -->
@@ -241,11 +265,10 @@
     <div class="menu-top">
       <div class="logo-orb"></div>
       <div class="eyebrow" style="text-align:center;">Marble Race</div>
-      <h1>Watch the maze<br>decide it.</h1>
+      <h1>Pick your racer.<br>Follow the chaos.</h1>
       <p class="sub" style="text-align:center; max-width:340px; margin-left:auto; margin-right:auto;">
-        Pick a racer, drop the field into a procedural maze, and watch real
-        physics — bumps, jams, lucky breaks — sort out who reaches the
-        finish first.
+        Wind through a maze or tumble through a marble drop.
+        Every track is different. First across the line wins.
       </p>
     </div>
     <div class="menu-bottom">
@@ -279,11 +302,11 @@
       <div style="width:38px;"></div>
     </div>
     <h2>Pick a mode</h2>
-    <p class="sub" style="margin-bottom:14px;">More modes are on the way.</p>
+    <p class="sub" style="margin-bottom:14px;">Choose your track. Your racer does the rest.</p>
     <div class="mode-list">
       <div class="mode-tile selected" data-mode="race">
         <div class="emoji">🏁</div>
-        <div class="txt"><h3>Maze Race</h3><p>Steer-yourself AI racers thread a procedural labyrinth. First to the finish wins.</p></div>
+        <div class="txt"><h3>Maze Race</h3><p>Twists, turns and close calls. Find the finish first.</p></div>
       </div>
       <div class="mode-tile" data-mode="drop"><div class="emoji">🎯</div><div class="txt"><h3>Marble Drop</h3><p>Gravity, pegs, spinning blades. Pick an arena below.</p></div></div>
       <div class="mode-tile locked"><div class="emoji">⚔️</div><div class="txt"><h3>Battle Royale</h3><p>Pickups, eliminations, last one standing.</p></div><div class="badge-soon">SOON</div></div>
@@ -330,6 +353,7 @@
       <div class="finish-counter"><span class="dot"></span><span id="finish-count">0</span>&nbsp;/&nbsp;<span id="finish-total">6</span>&nbsp;finished</div>
       <div style="width:38px;"></div>
     </div>
+    <div class="race-detail"><span id="following-racer">Pick your favourite</span><span id="race-clock">00.0s</span></div>
     <div id="race-stage">
       <canvas id="race-canvas"></canvas>
       <div class="countdown" id="countdown" style="display:none;"></div>
@@ -663,6 +687,57 @@ const JUNCTION_HESITATE_STEPS = Math.round(0.15*PHYSICS_HZ);
 const STUCK_CHECK_STEPS = Math.round(0.5*PHYSICS_HZ);
 const PROGRESS_CHECK_STEPS = Math.round(1.2*PHYSICS_HZ);
 
+function wallBlocks(race, from, to, radius=0){
+  const pad = race.geo.wallThickness/2 + radius;
+  return race.walls.some(([x1,y1,x2,y2])=>{
+    let lo=0, hi=1;
+    const mins=[Math.min(x1,x2)-pad, Math.min(y1,y2)-pad];
+    const maxs=[Math.max(x1,x2)+pad, Math.max(y1,y2)+pad];
+    for(let k=0;k<2;k++){
+      const delta=to[k]-from[k];
+      if(Math.abs(delta)<1e-9){ if(from[k]<mins[k]||from[k]>maxs[k]) return false; }
+      else {
+        let a=(mins[k]-from[k])/delta, b=(maxs[k]-from[k])/delta;
+        if(a>b) [a,b]=[b,a];
+        lo=Math.max(lo,a); hi=Math.min(hi,b);
+        if(lo>hi) return false;
+      }
+    }
+    return true;
+  });
+}
+
+function navigationTarget(race, rc){
+  const {geo}=race;
+  rc.motionHistory ||= [];
+  if(race.step%30===0){
+    rc.motionHistory.push([rc.x,rc.y]);
+    if(rc.motionHistory.length>7) rc.motionHistory.shift();
+    if(rc.motionHistory.length===7 && race.step>=(rc.escapeUntil||0)){
+      const span=Math.max(...[0,1].map(k=>Math.max(...rc.motionHistory.map(p=>p[k]))-Math.min(...rc.motionHistory.map(p=>p[k]))));
+      if(span<geo.racerRadius*1.5){
+        const choices=openNeighbors(...rc.lastCell,race.openRight,race.openDown,race.cols,race.rows);
+        const others=race.racers.filter(r=>r!==rc&&r.active);
+        const score=cell=>{
+          const p=geo.cellCenter(...cell);
+          const room=Math.min(geo.cell*3,...others.map(r=>Math.hypot(p[0]-r.x,p[1]-r.y)));
+          return room+Math.min(geo.cell,Math.hypot(p[0]-rc.target[0],p[1]-rc.target[1]))*.5;
+        };
+        choices.sort((a,b)=>score(b)-score(a));
+        if(choices.length){
+          rc.escapeTarget=geo.cellCenter(...choices[0]);
+          rc.escapeUntil=race.step+102;
+          const dx=rc.escapeTarget[0]-rc.x,dy=rc.escapeTarget[1]-rc.y,dist=Math.hypot(dx,dy)||1;
+          rc.vx+=dx/dist*geo.cell*.9; rc.vy+=dy/dist*geo.cell*.9;
+          rc.motionHistory=[];
+        }
+      }
+    }
+  }
+  const target=race.step<(rc.escapeUntil||0)?rc.escapeTarget:rc.target;
+  return wallBlocks(race,[rc.x,rc.y],target,geo.racerRadius*.85)?geo.cellCenter(...rc.lastCell):target;
+}
+
 function stepRace(race, tSec){
   const {geo, racers, walls} = race;
   race.step++;
@@ -682,6 +757,7 @@ function stepRace(race, tSec){
       const nx=dx/d, ny=dy/d;
       const closing = -((ra.vx-rb.vx)*nx + (ra.vy-rb.vy)*ny);
       if (closing>REPEL_GATE) continue;
+      if (wallBlocks(race,[ra.x,ra.y],[rb.x,rb.y])) continue;
       const strength = REPEL_STRENGTH*(1-d/REPEL_RADIUS);
       const fa = repel.get(ra), fb = repel.get(rb);
       fa[0]+=nx*strength; fa[1]+=ny*strength;
@@ -699,7 +775,7 @@ function stepRace(race, tSec){
       if (race.recomputeTarget(rc)) rc.recoveryUntil = Math.max(rc.recoveryUntil, step+JUNCTION_HESITATE_STEPS);
     }
 
-    const [tx,ty] = rc.target;
+    const [tx,ty] = navigationTarget(race, rc);
     const dx=tx-rc.x, dy=ty-rc.y;
     const dist = Math.hypot(dx,dy)||1;
     const speedScale = Math.min(1, Math.max(0.35, dist/SLOWDOWN_RADIUS));
@@ -717,11 +793,11 @@ function stepRace(race, tSec){
     const jitterAng = Math.sin(tSec*JITTER_HZ_SCALE + rc.idx*1.7) * rc.rng.range(0.5,1.0);
     const jitterMag = rc.weight*3.2;
     const [rfx,rfy] = repel.get(rc);
-    const fx = rc.weight*steerX + Math.cos(jitterAng)*jitterMag + rfx*0.02;
-    const fy = rc.weight*steerY + Math.sin(jitterAng)*jitterMag + rfy*0.02;
+    const fx = rc.weight*steerX + Math.cos(jitterAng)*jitterMag + rfx;
+    const fy = rc.weight*steerY + Math.sin(jitterAng)*jitterMag + rfy;
     rc.vx += fx*DT/rc.weight;
     rc.vy += fy*DT/rc.weight;
-    rc.vx *= 0.996; rc.vy *= 0.996;
+    rc.vx *= Math.pow(0.996,DT); rc.vy *= Math.pow(0.996,DT);
   }
 
   // integrate + wall collisions
@@ -788,10 +864,11 @@ function stepRace(race, tSec){
     rc.angle += rc.angularVel*DT;
     rc.angularVel *= 0.94;
     const [fx,fy] = [race.fzx, race.fzy];
-    if (Math.hypot(rc.x-fx, rc.y-fy) < geo.cell*0.55){
+    if (rc.y+geo.racerRadius >= geo.topBorder+race.rows*geo.cell+geo.finishDepth*.45){
       rc.finished = true; rc.active = false; rc.finishStep = step;
       race.finishedCount++;
       if (!race.winner) race.winner = rc;
+      race.resultReason="finish";
     }
   }
 
@@ -808,7 +885,7 @@ function stepRace(race, tSec){
         const [tx,ty]=rc.target;
         const dx=tx-rc.x, dy=ty-rc.y, dd=Math.hypot(dx,dy)||1;
         const nudge = MAX_SPEED*rc.weight*0.9;
-        rc.vx += dx/dd*nudge*0.02; rc.vy += dy/dd*nudge*0.02;
+        rc.vx += dx/dd*nudge/rc.weight; rc.vy += dy/dd*nudge/rc.weight;
         rc.recoveryUntil=0; rc.stuckCounter=0;
       }
     }
@@ -829,8 +906,8 @@ function stepRace(race, tSec){
         const side = rc.rng.random()<0.5?-1:1;
         const sdx=-ndy*side, sdy=ndx*side;
         const nudge = MAX_SPEED*rc.weight*1.4;
-        rc.vx += (ndx*0.6+sdx*0.7)*nudge*0.02;
-        rc.vy += (ndy*0.6+sdy*0.7)*nudge*0.02;
+        rc.vx += (ndx*0.6+sdx*0.7)*nudge/rc.weight;
+        rc.vy += (ndy*0.6+sdy*0.7)*nudge/rc.weight;
         rc.recoveryUntil=0; rc.progressStall=0;
       }
     }
@@ -857,11 +934,16 @@ function drawMazeBackground(ctx, race){
   grad.addColorStop(0,"rgba(48,209,88,0.28)");
   grad.addColorStop(1,"rgba(48,209,88,0.05)");
   ctx.fillStyle = grad;
-  ctx.fillRect(zx0, zy0, geo.cell, geo.finishDepth);
+  ctx.fillRect(geo.borderW, zy0, geo.w-2*geo.borderW, geo.finishDepth);
+  const stripeY=zy0+geo.finishDepth*.45, tile=geo.cell/6;
+  for(let x=geo.borderW,i=0;x<geo.w-geo.borderW;x+=tile,i++){
+    ctx.fillStyle=i%2?'#263542':'#fff';
+    ctx.fillRect(x,stripeY-tile/2,Math.min(tile,geo.w-geo.borderW-x),tile);
+  }
   ctx.fillStyle = "#1c8a44";
   ctx.font = `700 ${Math.round(geo.cell*0.30)}px ${getComputedStyle(document.body).fontFamily}`;
   ctx.textAlign = "center"; ctx.textBaseline="middle";
-  ctx.fillText("FINISH", zx0+geo.cell/2, zy0+geo.finishDepth/2);
+  ctx.fillText("FINISH", geo.w/2, zy0+geo.finishDepth*.77);
 
   ctx.strokeStyle = "#2c2620";
   ctx.lineCap = "round";
@@ -944,11 +1026,13 @@ function buildDropPegs(kind, rng, left, right, topY, finishY, h, racerRadius, pe
     let x = left+pegRadius*2.2+offset;
     while (x < right-pegRadius*2.2){
       if (dropPegKeep(kind,rowI,x,cx,trackW,colSpacing,progress)){
-        pegs.push({
+        const peg={
           x: x+rng.range(-pegRadius*0.35,pegRadius*0.35),
           y: y+rng.range(-pegRadius*0.35,pegRadius*0.35),
           color: DROP_OBSTACLE_COLORS[pegs.length%DROP_OBSTACLE_COLORS.length],
-        });
+        };
+        const clearance=pegRadius*1.8+racerRadius*2.5;
+        if(DROP_ARENA_SPINNERS[kind].every(([frac,len])=>Math.hypot(peg.x-cx,peg.y-(topY+(finishY-topY)*frac))>=trackW*len/2+clearance)) pegs.push(peg);
       }
       x += colSpacing;
     }
@@ -1002,7 +1086,7 @@ function stepDrop(drop, tSec){
   for (const rc of racers){
     if (!rc.active) continue;
     rc.vy += DROP_GRAVITY*DT;
-    rc.vx *= 0.999; rc.vy *= 0.999;
+    rc.vx *= Math.pow(0.999,DT); rc.vy *= Math.pow(0.999,DT);
     rc.x += rc.vx*DT; rc.y += rc.vy*DT;
 
     if (rc.x-racerRadius < left){ rc.x=left+racerRadius; rc.vx=Math.abs(rc.vx)*DROP_WALL_E; }
@@ -1035,7 +1119,9 @@ function stepDrop(drop, tSec){
       if (d<minD && d>0.0001){
         const nx=dx/d, ny=dy/d;
         rc.x += nx*(minD-d); rc.y += ny*(minD-d);
-        const vn = Math.min(0, rc.vx*nx+rc.vy*ny);
+        // A kinematic blade transfers its contact-point velocity.
+        const bladeVx=-b.angularVel*(py-b.y), bladeVy=b.angularVel*(px-b.x);
+        const vn = Math.min(0, (rc.vx-bladeVx)*nx+(rc.vy-bladeVy)*ny);
         rc.vx -= (1+DROP_PEG_E)*vn*nx;
         rc.vy -= (1+DROP_PEG_E)*vn*ny;
         rc.angularVel += 6;
@@ -1065,6 +1151,7 @@ function stepDrop(drop, tSec){
     if (rc.active && rc.y+racerRadius >= finishY){
       rc.active=false; rc.finished=true; drop.finishedCount++;
       if (!drop.winner) drop.winner = rc;
+      drop.resultReason="finish";
     }
   }
   const activeR = racers.filter(r=>r.active);
@@ -1134,6 +1221,9 @@ const state = {
   raceStartAt:0,
   lastTime:0,
   accumulator:0,
+  countdownTimer:null,
+  winnerTimer:null,
+  runId:0,
 };
 const SIM_KINDS = {
   race: {step:stepRace, draw:drawRace, size:(s)=>[s.geo.w, s.geo.imgH]},
@@ -1143,7 +1233,19 @@ const SIM_KINDS = {
 function showScreen(name){
   document.querySelectorAll(".screen").forEach(el=>el.classList.toggle("active", el.dataset.screen===name));
   state.screen = name;
-  if (name!=="race" && state.raf){ cancelAnimationFrame(state.raf); state.raf=null; }
+  document.body.dataset.screen=name;
+  window.scrollTo(0,0);
+  if (name!=="race") stopSimulation();
+}
+
+function stopSimulation(){
+  state.runId++;
+  if(state.raf) cancelAnimationFrame(state.raf);
+  clearInterval(state.countdownTimer);
+  clearTimeout(state.winnerTimer);
+  state.raf=state.countdownTimer=state.winnerTimer=null;
+  state.countdownActive=false;
+  document.getElementById("countdown").style.display="none";
 }
 document.querySelectorAll("[data-nav]").forEach(el=>{
   el.addEventListener("click", ()=>showScreen(el.dataset.nav));
@@ -1158,7 +1260,10 @@ function buildRacerGrid(){
   const grid = document.getElementById("racer-grid");
   grid.innerHTML = "";
   RACER_POOL.forEach((r,i)=>{
-    const card = document.createElement("div");
+    const card = document.createElement("button");
+    card.type="button";
+    card.setAttribute("aria-label",r.name);
+    card.setAttribute("aria-pressed",String(state.youIdx===i));
     card.className = "racer-card" + (state.youIdx===i ? " selected" : "");
     const cv = document.createElement("canvas");
     cv.width = 88; cv.height = 88;
@@ -1169,8 +1274,9 @@ function buildRacerGrid(){
     card.appendChild(cv); card.appendChild(label);
     card.addEventListener("click", ()=>{
       state.youIdx = i;
-      document.querySelectorAll(".racer-card").forEach(c=>c.classList.remove("selected"));
+      document.querySelectorAll(".racer-card").forEach(c=>{c.classList.remove("selected");c.setAttribute("aria-pressed","false");});
       card.classList.add("selected");
+      card.setAttribute("aria-pressed","true");
       document.getElementById("btn-racer-next").disabled = false;
     });
     grid.appendChild(card);
@@ -1198,11 +1304,16 @@ document.getElementById("arena-choices-drop").addEventListener("click", (e)=>{
   document.querySelectorAll("#arena-choices-drop button").forEach(b=>b.classList.toggle("on", b===btn));
 });
 document.querySelectorAll(".mode-tile[data-mode]").forEach(tile=>{
+  tile.setAttribute("role","button");
+  tile.tabIndex=0;
+  tile.setAttribute("aria-pressed",String(tile.dataset.mode===state.mode));
+  tile.addEventListener("keydown",e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();tile.click();}});
   tile.addEventListener("click", ()=>{
     state.mode = tile.dataset.mode;
-    document.querySelectorAll(".mode-tile[data-mode]").forEach(t=>t.classList.toggle("selected", t===tile));
+    document.querySelectorAll(".mode-tile[data-mode]").forEach(t=>{t.classList.toggle("selected", t===tile);t.setAttribute("aria-pressed",String(t===tile));});
     document.getElementById("arena-box-race").hidden = state.mode!=="race";
     document.getElementById("arena-box-drop").hidden = state.mode!=="drop";
+    document.getElementById("btn-mode-next").textContent=state.mode==="drop"?"Start Drop ▸":"Start Race ▸";
   });
 });
 document.getElementById("btn-mode-next").addEventListener("click", ()=>{
@@ -1226,6 +1337,7 @@ function buildRoster(){
 }
 
 function startSim(){
+  stopSimulation();
   const roster = buildRoster();
   const youNewIdx = roster.findIndex(r=>r.idx===state.youIdx);
   const seed = (Date.now() ^ Math.floor(Math.random()*1e9)) >>> 0;
@@ -1247,13 +1359,15 @@ function startSim(){
   sim.youIdx = youNewIdx;
   sim.kind = state.mode;
   state.sim = sim;
+  document.getElementById("following-racer").textContent=`Following ${sim.racers[youNewIdx].name} · ${state.mode==="drop"?"Marble Drop":"Maze Race"}`;
+  document.getElementById("race-clock").textContent="00.0s";
 
   document.getElementById("finish-total").textContent = roster.length;
   document.getElementById("finish-count").textContent = "0";
   document.getElementById("winner-overlay").classList.remove("show");
 
   fitCanvas(sim);
-  window.addEventListener("resize", ()=>fitCanvas(state.sim), {passive:true});
+  SIM_KINDS[sim.kind].draw(cctx,sim,sim.offscreen,0,sim.youIdx);
 
   runCountdown(()=>{
     state.lastTime = performance.now();
@@ -1263,6 +1377,7 @@ function startSim(){
     state.raf = requestAnimationFrame(loop);
   });
 }
+window.addEventListener("resize", ()=>fitCanvas(state.sim), {passive:true});
 
 function fitCanvas(sim){
   if (!sim) return;
@@ -1275,43 +1390,51 @@ function fitCanvas(sim){
   canvas.style.width = cssW+"px"; canvas.style.height = cssH+"px";
   canvas.width = w*dpr; canvas.height = h*dpr;
   cctx.setTransform(dpr,0,0,dpr,0,0);
+  if(sim.offscreen) SIM_KINDS[sim.kind].draw(cctx,sim,sim.offscreen,sim.step*DT,sim.youIdx);
 }
 
 function runCountdown(done){
+  const runId=state.runId;
   const el = document.getElementById("countdown");
   el.style.display = "flex";
   const seq = ["3","2","1","GO!"];
   let i = 0;
   el.textContent = seq[i];
-  const iv = setInterval(()=>{
+  state.countdownTimer = setInterval(()=>{
+    if(runId!==state.runId||state.screen!=="race"){clearInterval(state.countdownTimer);return;}
     i++;
-    if (i>=seq.length){ clearInterval(iv); el.style.display="none"; done(); return; }
+    if (i>=seq.length){ clearInterval(state.countdownTimer); state.countdownTimer=null; el.style.display="none"; done(); return; }
     el.textContent = seq[i];
   }, 650);
 }
 
 function loop(now){
   const sim = state.sim;
-  if (!sim) return;
+  if (!sim||state.screen!=="race") return;
   const kind = SIM_KINDS[sim.kind];
   let dtReal = (now - state.lastTime)/1000;
   state.lastTime = now;
   dtReal = Math.min(dtReal, 0.05);
   state.accumulator += dtReal;
-  const tSecBase = (now - state.raceStartAt)/1000;
 
   while (state.accumulator >= DT){
-    kind.step(sim, tSecBase - state.accumulator);
+    kind.step(sim, sim.step*DT);
     state.accumulator -= DT;
+    if(!sim.winner && sim.step*DT >= (sim.kind==="drop"?60:90)){
+      const progress=r=>sim.kind==="drop"? -r.y : sim.distField[r.lastCell[0]][r.lastCell[1]];
+      sim.winner=sim.racers.filter(r=>r.active).sort((a,b)=>progress(a)-progress(b))[0];
+      sim.resultReason="timeout";
+    }
     if (sim.winner) break;
   }
 
-  kind.draw(cctx, sim, sim.offscreen, tSecBase, sim.youIdx);
+  kind.draw(cctx, sim, sim.offscreen, sim.step*DT, sim.youIdx);
+  document.getElementById("race-clock").textContent=(sim.step*DT).toFixed(1).padStart(4,"0")+"s";
   document.getElementById("finish-count").textContent = sim.finishedCount;
 
   if (sim.winner && !state.countdownActive){
     state.countdownActive = true;
-    setTimeout(()=>showWinner(sim), 550);
+    state.winnerTimer=setTimeout(()=>{if(state.sim===sim&&state.screen==="race") showWinner(sim);}, 550);
     return;
   }
   if (!sim.winner) state.raf = requestAnimationFrame(loop);
@@ -1319,10 +1442,12 @@ function loop(now){
 
 function showWinner(sim){
   const w = sim.winner;
-  document.getElementById("winner-name").textContent = (w.idx===sim.youIdx ? "You — " : "") + w.name + " wins!";
-  document.getElementById("winner-sub").textContent = w.idx===sim.youIdx
-    ? "Your racer reached the finish first."
-    : "Reached the finish first.";
+  SIM_KINDS[sim.kind].draw(cctx,sim,sim.offscreen,sim.step*DT,sim.youIdx);
+  document.getElementById("finish-count").textContent=sim.finishedCount;
+  document.getElementById("race-clock").textContent=(sim.step*DT).toFixed(1).padStart(4,"0")+"s";
+  const timeout=sim.resultReason==="timeout";
+  document.getElementById("winner-name").textContent = (w.idx===sim.youIdx ? "You — " : "") + w.name + (timeout?" leads!":" wins!");
+  document.getElementById("winner-sub").textContent = timeout?"Time limit reached. Farthest progress wins.":w.idx===sim.youIdx?"Your racer crossed the line first.":"First across the finish line.";
   const wc = winnerCanvas.getContext("2d");
   winnerCanvas.width = 96; winnerCanvas.height = 96;
   drawRacerFace(wc, 96, w.color, 0, w.idx===sim.youIdx);

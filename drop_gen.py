@@ -23,7 +23,7 @@ from race_sim import (
     build_duck_envelope, race_bump_times, SR as SFX_SR,
 )
 from video_gen import (
-    base_dir, send_telegram, retry_with_backoff, ensure_directories_exist,
+    base_dir, send_telegram, ensure_directories_exist,
     get_recent_matchups, pick_background_music, upload_to_youtube, cleanup_temp_files,
     MAX_RETRIES, RETRY_DELAY, YOUTUBE_CATEGORY_ID,
     YOUTUBE_PRIVACY_STATUS, YOUTUBE_MADE_FOR_KIDS, VIDEO_CODEC, AUDIO_CODEC,
@@ -85,7 +85,7 @@ def _pick_drop_tags(count=6):
     return ' '.join(random.sample(DROP_HASHTAG_POOL, min(count, len(DROP_HASHTAG_POOL))))
 
 
-def build_drop_title_and_description(racer_names, winner_name):
+def build_drop_title_and_description(racer_names, winner_name, result_reason="finish"):
     names_joined = " vs ".join(racer_names)
     template = random.choice(DROP_TITLE_TEMPLATES)
     title = template.format(names=names_joined, n=len(racer_names), winner=winner_name)[:95]
@@ -93,6 +93,8 @@ def build_drop_title_and_description(racer_names, winner_name):
     racer_tags = ' '.join(f"#{name.lower()}" for name in racer_names[:3])
     hashtags = f"{racer_tags} {_pick_drop_tags()}"
     body = random.choice(DROP_DESCRIPTION_TEMPLATES).format(names=names_joined, winner=winner_name)
+    if result_reason == "timeout":
+        body = f"{names_joined} tumble through a random marble drop!\n\nTime limit reached. {winner_name} wins by travelling farthest down the track."
     description = f"{body}\n\n{hashtags}"
     tags = list(racer_names) + ["marble drop", "plinko", "physics simulation", "shorts"]
     return title, description, tags
@@ -105,7 +107,7 @@ def generate_drop_video(skip_upload: bool = False, n_racers: int = None):
         ensure_directories_exist()
         cleanup_temp_files()
 
-        recent_matchups = get_recent_matchups(AVOID_REPEAT_LOOKBACK)
+        recent_matchups = [] if skip_upload else get_recent_matchups(AVOID_REPEAT_LOOKBACK)
 
         seed = random.randint(1, 2**31 - 1)
         race = simulate_drop(
@@ -132,7 +134,7 @@ def generate_drop_video(skip_upload: bool = False, n_racers: int = None):
         logger.info(f"🎯 Drop ({race['n_racers']}): {' vs '.join(racer_names)} — жеңімпаз: {winner_name}")
 
         video_title, video_description, video_tags = build_drop_title_and_description(
-            racer_names, winner_name
+            racer_names, winner_name, race["result_reason"]
         )
         logger.info(f"🏷️ Тақырып: {video_title}")
 
@@ -212,7 +214,7 @@ def generate_drop_video(skip_upload: bool = False, n_racers: int = None):
             logger.info(f"✓ Видео дайын: {final_output}")
 
             if not skip_upload:
-                video_id = retry_with_backoff(lambda: upload_to_youtube(final_output, video_title, video_description, video_tags, thumbnail_path))
+                video_id = upload_to_youtube(final_output, video_title, video_description, video_tags, thumbnail_path)
                 video_url = f"https://youtube.com/shorts/{video_id}"
                 send_telegram(
                     f"✅ <b>Жаңа Marble Drop видео жүктелді!</b>\n"
@@ -240,12 +242,10 @@ def generate_drop_video(skip_upload: bool = False, n_racers: int = None):
     except Exception as e:
         logger.error(f"❌ Қате: {e}")
         logger.debug(traceback.format_exc())
-        send_telegram(f"❌ <b>Marble Drop видео жасауда қате шықты!</b>\n<code>{str(e)[:300]}</code>")
+        if not skip_upload:
+            send_telegram(f"❌ <b>Marble Drop видео жасауда қате шықты!</b>\n<code>{str(e)[:300]}</code>")
         raise
 
 
 if __name__ == "__main__":
-    try:
-        generate_drop_video()
-    except Exception as e:
-        logger.error(f"Программа сәтсіз аяқталды: {e}")
+    generate_drop_video()

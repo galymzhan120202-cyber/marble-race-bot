@@ -1,12 +1,41 @@
 # Maze Race Bot — Setup нұсқаулығы
 
+## Қазіргі нұсқа (2026-10-07)
+
+Боттың YouTube-қа жұмыс істеп тұрғанын пайдаланушы растады. Қазір төрт
+видео режимі бар: Race, Battle, Drop және Tournament. Браузердегі
+`index.html` ойынында Race пен Drop бар.
+
+Battle зонасы — өтуге болатын қауіпті аймақ: жарысшы қауіпсіз жаққа қаша
+алады. Қауіпті аймақта үздіксіз 2,5 секунд қалса, ойыннан шығады. Финишке
+бірінші жеткен немесе соңғы тірі қалған жарысшы жеңеді. Соңғы қатысушы
+анықталған соң қосымша физика орындалмайды. Уақыт біткендегі жеңіс бөлек
+көрсетіледі. Видео ұзақтығының минимумы жеңімпаз анықталған Battle-ді және
+барлығы аяқтаған Race/Drop-ты жасанды түрде созбайды.
+
+Тексерулер (YouTube-қа жарияламайды):
+
+```powershell
+python -m pip install -r requirements-dev.txt
+python -m pytest -q
+node --test tests/web.test.cjs
+python scripts/audit_physics.py --seeds 40 --output physics-audit.json
+```
+
+Аудит әр seed үшін 2–8 қатысушымен үш режимді тексереді. `stuck` метрикасы
+үш секунд бойы қозғалыс ауқымы жарысшы радиусының 1,5 есесінен аз болғанын
+білдіреді; қозғалып жүріп бір ұяшықта қалу (`max_dwell`) бөлек есептеледі.
+GitHub Actions тесттері әр push/PR сайын іске қосылады.
+
+Төмендегі бастапқы орнату нұсқаулығын жаңа компьютер/арна үшін пайдаланыңыз.
+
 Код пен pipeline толық дайын (`race_sim.py`, `video_gen.py`, `scheduler.py`,
 `tournament_gen.py`, `.github/workflows/upload.yml`,
 `.github/workflows/tournament.yml`). Бұл бот `weapon-ball-bot`-пен (және
 қалған боттармен) **бірдей upload/cron архитектурада**, бірақ мазмұны
 түбегейлі бөлек:
 
-**Gemini/LLM де, дауыс (TTS) та, Pexels/stock footage те жоқ.** 6-9 квадрат
+**Gemini/LLM де, дауыс (TTS) та, Pexels/stock footage те жоқ.** 2-8 квадрат
 "жарысшы" (әрқайсысында кішкентай бет — екі көз + күлкі) кездейсоқ
 генерацияланған лабиринтке түсіп, финишке бірінші жеткен ұтады. Жоғарыдан
 көрініс (top-down), нақты `pymunk` физикасымен (гравитация жоқ, әр жарысшы
@@ -42,10 +71,10 @@
    етіңіз.
 2. Repo → Settings → Secrets and variables → Actions → төмендегі 4 Secret
    қосыңыз:
-   - `MRACE_TELEGRAM_NOTIFY_TOKEN`
-   - `MRACE_TELEGRAM_NOTIFY_CHAT_ID`
-   - `MRACE_CLIENT_SECRETS_JSON` — `client_secrets.json` файлының толық мазмұны
-   - `MRACE_YOUTUBE_TOKEN_JSON` — `youtube_token.json` файлының толық мазмұны
+   - `MBALL_TELEGRAM_NOTIFY_TOKEN`
+   - `MBALL_TELEGRAM_NOTIFY_CHAT_ID`
+   - `MBALL_CLIENT_SECRETS_JSON` — `client_secrets.json` файлының толық мазмұны
+   - `MBALL_YOUTUBE_TOKEN_JSON` — `youtube_token.json` файлының толық мазмұны
 
    Telegram-ды басқа боттарыңызбен ортақ пайдалануға болады (cron уақыттары
    15 мин ығыстырылған, соқтықпайды).
@@ -76,7 +105,7 @@ royalty-free/CC0 2-3 трек тауып, `music/` папкасына қосып
 Ешбір баптау қажет емес. `race_sim.py`:
 - **16 жарысшы скинінен** (Blacky, Sunny, Cocoa, Pine, Tango, Ghost, Sky,
   Rosy, Cherry, Minty, Grape, Coral, Lime, Slate, Amber, Ruby) кездейсоқ
-  **6-9-ын** таңдайды (салмақталған), әрқайсысы флэт түсті дөңгелектелген
+  **2-8-ын** таңдайды (салмақталған), әрқайсысы флэт түсті дөңгелектелген
   квадрат + екі көз + күлкі + жүру бағытына қараған "желекше" ретінде
   салынады (нақты сурет/фото жоқ, Content ID claim жоқ);
 - лабиринтті кездейсоқ DFS (recursive backtracker) алгоритмімен генерациялап,
@@ -159,9 +188,9 @@ GitHub Actions-та таза cron синтаксисі "әр 4 күн сайын
 (мыс. commit-делген timestamp файл немесе GitHub Actions cache арқылы)
 өзіңіз қосуыңызға болады — бұл жоба соны істемейді, тек жуықтайды.
 
-GitHub Secrets 4-і Shorts-пен ортақ (`MRACE_CLIENT_SECRETS_JSON`,
-`MRACE_YOUTUBE_TOKEN_JSON`, `MRACE_TELEGRAM_NOTIFY_TOKEN`,
-`MRACE_TELEGRAM_NOTIFY_CHAT_ID`) — қосымша Secret қосудың қажеті жоқ.
+GitHub Secrets 4-і Shorts-пен ортақ (`MBALL_CLIENT_SECRETS_JSON`,
+`MBALL_YOUTUBE_TOKEN_JSON`, `MBALL_TELEGRAM_NOTIFY_TOKEN`,
+`MBALL_TELEGRAM_NOTIFY_CHAT_ID`) — қосымша Secret қосудың қажеті жоқ.
 
 ## 7. Монетизация туралы маңызды ескерту
 

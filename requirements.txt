@@ -1,5 +1,5 @@
-moviepy
-pymunk
+moviepy==2.2.1
+pymunk==7.3.0
 numpy
 Pillow
 google-auth

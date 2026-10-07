@@ -7,7 +7,7 @@ shares the YouTube channel, OAuth credentials, Openverse music, SFX
 synthesis and Telegram notify helpers with video_gen.py.
 
 Bracket shape: 16 racers -> Round of 16 (4 heats of 4, top 2 per heat
-advance) -> Quarterfinals (2 heats of 4, top 2 advance) -> Final (1 heat of
+advance) -> Round of 8 (2 heats of 4, top 2 advance) -> Final (1 heat of
 4, winner = champion). A procedurally-drawn bracket board is rendered
 between rounds so the tree of matchups is visually trackable, same
 code-generated/no-assets style as everything else in this project.
@@ -31,7 +31,7 @@ from race_sim import (
     build_cold_open_clip, build_cold_open_sfx,
 )
 from video_gen import (
-    base_dir, send_telegram, retry_with_backoff, ensure_directories_exist,
+    base_dir, send_telegram, ensure_directories_exist,
     pick_background_music, upload_to_youtube, cleanup_temp_files,
     pick_rotating_tags, MAX_RETRIES, RETRY_DELAY, YOUTUBE_CATEGORY_ID,
     YOUTUBE_PRIVACY_STATUS, YOUTUBE_MADE_FOR_KIDS, VIDEO_CODEC, AUDIO_CODEC,
@@ -72,12 +72,12 @@ TOURNAMENT_TITLE_TEMPLATES = [
 
 TOURNAMENT_DESCRIPTION_TEMPLATES = [
     "16 racers, one single-elimination maze tournament!\n\n"
-    "🏁 Round of 16 → Quarterfinals → Final\n"
+    "🏁 Round of 16 → Round of 8 → Final\n"
     "🏆 Champion: {champion}\n\n"
     "Fully code-generated mazes and physics, zero stock footage, zero copyright risk.",
 
     "The full bracket, start to finish: 4 heats of 4 in the Round of 16, "
-    "then Quarterfinals, then one Final heat crowns the champion.\n\n"
+    "then Round of 8, then one Final heat crowns the champion.\n\n"
     "🏆 This tournament's champion: {champion}\n\n"
     "Every maze is randomly generated — no two tournaments ever play out the same.",
 
@@ -101,7 +101,7 @@ def build_tournament_title_and_description(champion_name):
 # --- Card / bracket-board rendering (all code-only, no assets) -----------
 
 def _bg_canvas(theme, w, h):
-    img = Image.new("RGBA", (w, h), (*theme["floor"], 255))
+    img = Image.new("RGBA", (w, h), (15, 20, 31, 255))
     d = ImageDraw.Draw(img)
     glow = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     gd = ImageDraw.Draw(glow)
@@ -120,7 +120,7 @@ def render_title_card(racers16, theme, seed, w=TOUR_WIDTH, h=TOUR_HEIGHT):
     tw = d.textlength(title, font=title_font)
     d.text((w / 2 - tw / 2, h * 0.08), title, font=title_font, fill=(255, 215, 60, 255),
            stroke_width=7, stroke_fill=(0, 0, 0, 255))
-    sub = "Single Elimination Bracket"
+    sub = "16 racers / Top 2 advance from each heat / One champion"
     sw = d.textlength(sub, font=sub_font)
     d.text((w / 2 - sw / 2, h * 0.20), sub, font=sub_font, fill=(255, 255, 255, 255))
 
@@ -136,6 +136,9 @@ def render_title_card(racers16, theme, seed, w=TOUR_WIDTH, h=TOUR_HEIGHT):
         x = x0 + gx * icon_size * 1.15
         y = y0 + gy * icon_size * 1.3
         img.alpha_composite(icon, (int(x), int(y)))
+        name_font = get_font(int(h * 0.024))
+        d.text((x + icon_size/2, y + icon_size + h*.008), r["name"], anchor="mt",
+               font=name_font, fill=(220,230,244,255))
     return np.array(img.convert("RGB"))
 
 
@@ -333,22 +336,22 @@ def generate_tournament_video(skip_upload: bool = False):
 
         _append(_static_clip(render_bracket_board(bracket, theme, "Round of 16 complete"), BRACKET_HOLD_SECONDS))
 
-        # Quarterfinals
+        # Round of 8
         qf_groups = [round1_advancers[0] + round1_advancers[1], round1_advancers[2] + round1_advancers[3]]
         qf_advancers = []
         for hi, group in enumerate(qf_groups):
             _append(_static_clip(
-                render_heat_card("QUARTERFINALS", f"Heat {hi + 1} of 2", group, theme), HEAT_CARD_SECONDS))
+                render_heat_card("ROUND OF 8", f"Heat {hi + 1} of 2", group, theme), HEAT_CARD_SECONDS))
             heat_seed = seed * 1000 + 200 + hi
             race, clip = _run_heat(heat_seed, group, seed)
             _append(clip, race_bump_times(race))
             top2 = race["full_ranking"][:2]
             bracket["round2"][hi] = {"racers": group, "advancing_idx": top2}
             qf_advancers.append([group[i] for i in top2])
-            logger.info(f"🏁 QF Heat {hi + 1}: {[r['name'] for r in group]} → advance: "
+            logger.info(f"🏁 R8 Heat {hi + 1}: {[r['name'] for r in group]} → advance: "
                         f"{[group[i]['name'] for i in top2]}")
 
-        _append(_static_clip(render_bracket_board(bracket, theme, "Quarterfinals complete"), BRACKET_HOLD_SECONDS))
+        _append(_static_clip(render_bracket_board(bracket, theme, "Round of 8 complete"), BRACKET_HOLD_SECONDS))
 
         # Final
         final_group = qf_advancers[0] + qf_advancers[1]
@@ -450,8 +453,8 @@ def generate_tournament_video(skip_upload: bool = False):
             logger.info(f"✓ Видео дайын: {final_output}")
 
             if not skip_upload:
-                video_id = retry_with_backoff(lambda: upload_to_youtube(
-                    final_output, video_title, video_description, video_tags, thumbnail_path))
+                video_id = upload_to_youtube(
+                    final_output, video_title, video_description, video_tags, thumbnail_path)
                 video_url = f"https://youtube.com/watch?v={video_id}"
                 send_telegram(
                     f"✅ <b>Жаңа Tournament видео жүктелді!</b>\n"
@@ -473,12 +476,10 @@ def generate_tournament_video(skip_upload: bool = False):
     except Exception as e:
         logger.error(f"❌ Қате: {e}")
         logger.debug(traceback.format_exc())
-        send_telegram(f"❌ <b>Tournament видео жасауда қате шықты!</b>\n<code>{str(e)[:300]}</code>")
+        if not skip_upload:
+            send_telegram(f"❌ <b>Tournament видео жасауда қате шықты!</b>\n<code>{str(e)[:300]}</code>")
         raise
 
 
 if __name__ == "__main__":
-    try:
-        generate_tournament_video()
-    except Exception as e:
-        logger.error(f"Программа сәтсіз аяқталды: {e}")
+    generate_tournament_video()

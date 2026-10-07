@@ -33,6 +33,10 @@ __pycache__/
 *.so
 .Python
 .venv/
+.audit-venv/
+.audit-work/
+.pytest_cache/
+physics-audit.json
 env/
 venv/
 ENV/
