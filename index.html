@@ -428,7 +428,21 @@ const rgb = (c) => `rgb(${c[0]},${c[1]},${c[2]})`;
 const darker = (c, amt=55) => `rgb(${Math.max(0,c[0]-amt)},${Math.max(0,c[1]-amt)},${Math.max(0,c[2]-amt)})`;
 const lighten = (c, amt) => `rgb(${Math.round(c[0]+(255-c[0])*amt)},${Math.round(c[1]+(255-c[1])*amt)},${Math.round(c[2]+(255-c[2])*amt)})`;
 
-function drawRacerFace(ctx, size, color, angle=0, isYou=false){
+const racerPortraits = new Map();
+function drawRacerFace(ctx, size, color, angle=0, isYou=false, name=""){
+  const portrait = racerPortraits.get(name);
+  if(portrait && portrait.complete && portrait.naturalWidth){
+    ctx.save();
+    ctx.translate(size/2,size/2); ctx.rotate(angle);
+    ctx.drawImage(portrait,-size/2,-size/2,size,size);
+    ctx.restore();
+    if(isYou){
+      ctx.save(); ctx.beginPath(); ctx.arc(size*.84,size*.16,size*.095,0,Math.PI*2);
+      ctx.fillStyle="#67e8f9"; ctx.fill(); ctx.strokeStyle="#0f172a"; ctx.lineWidth=2; ctx.stroke();
+      ctx.restore();
+    }
+    return;
+  }
   const cx = size/2, cy = size/2, r = size*0.44;
   ctx.save();
   ctx.translate(cx, cy);
@@ -630,6 +644,20 @@ function buildRace(seed, roster, arenaSize){
   const finishCol = mazeRng.int(cols);
   const finishCell = [rows-1, finishCol];
   const distField = bfsDistanceField(openRight, openDown, cols, rows, finishCell);
+  const candidates = [];
+  for(let r=0;r<Math.max(2,Math.ceil(n/cols));r++) for(let c=0;c<cols;c++) candidates.push([r,c]);
+  candidates.sort((a,b)=>distField[a[0]][a[1]]-distField[b[0]][b[1]] || a[0]-b[0] || a[1]-b[1]);
+  let spawnCells=candidates.slice(0,n), bestSpread=Infinity, bestDepth=Infinity;
+  for(let i=0;i<=candidates.length-n;i++){
+    const group=candidates.slice(i,i+n);
+    const spread=distField[group[n-1][0]][group[n-1][1]]-distField[group[0][0]][group[0][1]];
+    const depth=group.reduce((sum,p)=>sum+p[0],0);
+    if(spread<bestSpread || (spread===bestSpread && depth<bestDepth)){
+      spawnCells=group; bestSpread=spread; bestDepth=depth;
+    }
+  }
+  const startRng=makeRng((seed^0x51f15e)>>>0);
+  for(let i=spawnCells.length-1;i>0;i--){const j=startRng.int(i+1); [spawnCells[i],spawnCells[j]]=[spawnCells[j],spawnCells[i]];}
 
   const stageW = 900; // logical px, canvas scales to container via devicePixelRatio
   const geo = makeGeo(stageW, cols, rows);
@@ -637,7 +665,7 @@ function buildRace(seed, roster, arenaSize){
   const [fzx, fzy] = geo.finishZoneCenter(finishCol);
 
   const racers = roster.map((r,i)=>{
-    const sr = Math.floor(i/cols), sc = i%cols;
+    const [sr,sc] = spawnCells[i];
     const [cx,cy] = geo.cellCenter(sr,sc);
     const prng = makeRng((seed + i*97 + 13) >>> 0);
     return {
@@ -975,7 +1003,7 @@ function drawRace(ctx, race, offscreen, tSec, youIdx){
     ctx.save();
     ctx.translate(rc.x-s/2, rc.y-s/2);
     ctx.shadowColor = "rgba(0,0,0,0.28)"; ctx.shadowBlur = 5; ctx.shadowOffsetY=2;
-    drawRacerFace(ctx, s, rc.color, rc.angle, rc.idx===youIdx);
+    drawRacerFace(ctx, s, rc.color, rc.angle, rc.idx===youIdx, rc.name);
     ctx.restore();
   }
 }
@@ -1061,12 +1089,9 @@ function buildDrop(seed, roster, arenaKind){
     color: DROP_OBSTACLE_COLORS[bi%DROP_OBSTACLE_COLORS.length],
   }));
 
-  const candy = DROP_CANDY_COLORS.slice();
-  for (let i=candy.length-1;i>0;i--){ const j=rng.int(i+1); [candy[i],candy[j]]=[candy[j],candy[i]]; }
-
   const spacing = trackW/(n+1);
   const racers = roster.map((r,i)=>({
-    ...r, idx:i, color: candy[i%candy.length],
+    ...r, idx:i,
     x: left+spacing*(i+1)+rng.range(-8,8), y: topY+rng.range(-6,6),
     vx:0, vy:0, angle: rng.range(-0.3,0.3), angularVel:0,
     finished:false, active:true,
@@ -1199,7 +1224,7 @@ function drawDrop(ctx, drop, offscreen, tSec, youIdx){
   for (const rc of drop.racers){
     ctx.save(); ctx.translate(rc.x-s/2, rc.y-s/2);
     ctx.shadowColor="rgba(0,0,0,0.28)"; ctx.shadowBlur=5; ctx.shadowOffsetY=2;
-    drawRacerFace(ctx, s, rc.color, rc.angle, rc.idx===youIdx);
+    drawRacerFace(ctx, s, rc.color, rc.angle, rc.idx===youIdx, rc.name);
     ctx.restore();
   }
   ctx.restore();
@@ -1268,7 +1293,7 @@ function buildRacerGrid(){
     const cv = document.createElement("canvas");
     cv.width = 88; cv.height = 88;
     const ctx = cv.getContext("2d");
-    drawRacerFace(ctx, 88, r.color, 0, false);
+    drawRacerFace(ctx, 88, r.color, 0, false, r.name);
     const label = document.createElement("span");
     label.textContent = r.name;
     card.appendChild(cv); card.appendChild(label);
@@ -1450,7 +1475,7 @@ function showWinner(sim){
   document.getElementById("winner-sub").textContent = timeout?"Time limit reached. Farthest progress wins.":w.idx===sim.youIdx?"Your racer crossed the line first.":"First across the finish line.";
   const wc = winnerCanvas.getContext("2d");
   winnerCanvas.width = 96; winnerCanvas.height = 96;
-  drawRacerFace(wc, 96, w.color, 0, w.idx===sim.youIdx);
+  drawRacerFace(wc, 96, w.color, 0, w.idx===sim.youIdx, w.name);
   document.getElementById("winner-overlay").classList.add("show");
   state.countdownActive = false;
   if (state.raf){ cancelAnimationFrame(state.raf); state.raf=null; }
@@ -1463,6 +1488,12 @@ document.getElementById("btn-newracer").addEventListener("click", ()=>{
   buildRacerGrid();
   showScreen("racer");
 });
+for(const racer of RACER_POOL){
+  const portrait=new Image();
+  racerPortraits.set(racer.name,portrait);
+  portrait.onload=()=>{if(state.screen==="racer") buildRacerGrid();};
+  portrait.src=`assets/racers/${racer.name.toLowerCase()}.png`;
+}
 </script>
 </body>
 </html>

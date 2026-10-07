@@ -4,6 +4,50 @@ Latest update: 2026-10-07. Update this file whenever a setup step changes —
 session/machine switches have already lost unsaved browser work once, this
 file is the durable record.
 
+## Arena audit, character identity and viewing pace (2026-10-07)
+
+- Forced all ten maze styles and four Drop styles through 290 new races,
+  battles, drops and landscape tournament heats (seeds 41, 57, 103, 211,
+  997). Found one connected but impractically long sparse tournament maze:
+  seed 103 required 136-151 cell crossings from the original starting grid
+  and timed out at 55 seconds without a finisher. Arena preparation now
+  opens real shortcuts to bound starting routes; rendering, collision walls
+  and navigation all use the same repaired grid.
+- Starting positions are selected from a band of similar route lengths and
+  assigned by a seeded draw, rather than reserving lanes by roster index.
+  Applied to Python Race/Battle and browser Race. Regression checks confirm
+  that the starting-distance spread does not increase.
+- Added NetworkX 3.4.2 as a test-only dependency to independently verify
+  shortest paths. Pymunk queries verify body clearance, wall openings, finish
+  access and weapon pickup placement across portrait and landscape arenas.
+- Original Pillow-drawn portraits give all 16 racers distinct faces and
+  emblems, including readable eyes on dark bodies. Browser PNGs are generated
+  from the same source with `python scripts/build_racer_assets.py`. Drop keeps
+  signature character colours. Portraits remain distinct with colour removed.
+- Moving 0.8-second previews show early action without selecting the winner;
+  no opening white flash or black fade. Countdown reduced from 2.0 to 0.9
+  seconds, with audio/frame timing aligned. Race and Drop stop once the result
+  is settled. Tournament cards are shorter and show both advancing racers.
+  The tournament thumbnail shows entrants, and its opening previews the first
+  heat rather than revealing finalists. Winner-specific question titles removed.
+- A pre-render publication gate rejects timeouts, incomplete rankings,
+  non-finite coordinates, insufficient qualifiers and confined 3-second
+  stalls. Up to eight simulations are tried; failure stops before rendering
+  or upload. Duplicate matchups are still avoided. Offline preview mode can
+  render deliberately short simulations without passing the publication gate.
+- Validation: 194 Python tests, 290 forced-arena simulations (no stalls,
+  invalid positions, incomplete rankings or timeouts after the fixes), 168
+  seeded browser races/drops, responsive browser navigation and all four
+  audio/video encode-decode previews. No YouTube uploads or Telegram messages
+  were sent. These are content/pacing improvements; retention impact still
+  needs to be measured against real YouTube Analytics.
+
+References reviewed: [Pymunk collision/query examples](https://www.pymunk.org/en/latest/examples.html),
+[NetworkX shortest paths](https://networkx.org/documentation/stable/reference/algorithms/generated/networkx.algorithms.shortest_paths.generic.shortest_path.html),
+[Matter.js examples](https://github.com/liabru/matter-js/tree/master/examples),
+and [YouTube audience retention](https://support.google.com/youtube/answer/9314415).
+The existing Pymunk engine was retained; no external game artwork was copied.
+
 ## Physics, storm, arenas and presentation fixes (2026-10-07)
 
 The user confirmed the YouTube bot is already running and uploading, and

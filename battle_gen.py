@@ -10,6 +10,7 @@ Telegram notify helpers with video_gen.py.
 """
 import os
 import random
+from race_quality import generate_playable
 import logging
 import traceback
 
@@ -53,7 +54,7 @@ BATTLE_TITLE_TEMPLATES = [
     "{n}-Way Battle Royale: {names}",
     "Only One Walks Out: {names}",
     "{names} — Last One Standing #shorts",
-    "Can {winner} Survive the Arena?",
+    "Who Can Survive This Arena?",
 ]
 
 BATTLE_DESCRIPTION_TEMPLATES = [
@@ -112,25 +113,18 @@ def generate_battle_video(skip_upload: bool = False, n_racers: int = None):
         recent_matchups = [] if skip_upload else get_recent_matchups(AVOID_REPEAT_LOOKBACK)
 
         seed = random.randint(1, 2**31 - 1)
-        race = simulate_battle(
+        race = generate_playable(simulate_battle,
             w=BATTLE_WIDTH, h=BATTLE_HEIGHT, seed=seed, fps=BATTLE_FPS,
             max_seconds=BATTLE_MAX_SECONDS, min_seconds=BATTLE_MIN_SECONDS,
             n_racers=n_racers,
+            recent_matchups=recent_matchups,
+            max_attempts=max(8, AVOID_REPEAT_MAX_ATTEMPTS),
+            enforce_quality=not skip_upload,
         )
         racer_names = [r["name"] for r in race["racers"]]
-
-        attempts = 1
-        while frozenset(racer_names) in recent_matchups and attempts < AVOID_REPEAT_MAX_ATTEMPTS:
-            seed = random.randint(1, 2**31 - 1)
-            race = simulate_battle(
-                w=BATTLE_WIDTH, h=BATTLE_HEIGHT, seed=seed, fps=BATTLE_FPS,
-                max_seconds=BATTLE_MAX_SECONDS, min_seconds=BATTLE_MIN_SECONDS,
-                n_racers=n_racers,
-            )
-            racer_names = [r["name"] for r in race["racers"]]
-            attempts += 1
+        attempts = race["generation_attempts"]
         if attempts > 1:
-            logger.info(f"🔁 Қайталанатын құрам аттап өтілді ({attempts} әрекет)")
+            logger.info(f"🔁 Жарамды арена таңдалды ({attempts} әрекет)")
 
         winner_name = race["winner_name"]
         logger.info(f"⚔️ Battle ({race['n_racers']}): {' vs '.join(racer_names)} — жеңімпаз: {winner_name}")

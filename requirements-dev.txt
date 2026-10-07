@@ -1,2 +1,3 @@
 -r requirements.txt
 pytest>=8,<10
+networkx==3.4.2

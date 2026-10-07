@@ -14,6 +14,7 @@ code-generated/no-assets style as everything else in this project.
 """
 import os
 import random
+from race_quality import generate_playable
 import logging
 import traceback
 
@@ -47,11 +48,11 @@ TOUR_ROWS = int(os.getenv('TOURNAMENT_HEAT_ROWS', '32'))
 TOUR_HEAT_MIN_SECONDS = int(os.getenv('TOURNAMENT_HEAT_MIN_SECONDS', '18'))
 TOUR_HEAT_MAX_SECONDS = int(os.getenv('TOURNAMENT_HEAT_MAX_SECONDS', '55'))
 
-TITLE_CARD_SECONDS = 4.5
-HEAT_CARD_SECONDS = 2.6
-BRACKET_HOLD_SECONDS = 5.0
-CHAMPION_HOLD_SECONDS = 6.5
-OUTRO_SECONDS = 4.5
+TITLE_CARD_SECONDS = 2.0
+HEAT_CARD_SECONDS = 1.4
+BRACKET_HOLD_SECONDS = 2.8
+CHAMPION_HOLD_SECONDS = 3.5
+OUTRO_SECONDS = 2.0
 
 logging.basicConfig(
     level=logging.INFO,
@@ -131,7 +132,7 @@ def render_title_card(racers16, theme, seed, w=TOUR_WIDTH, h=TOUR_HEIGHT):
     x0 = w / 2 - grid_w / 2
     y0 = h * 0.34
     for i, r in enumerate(racers16):
-        icon = make_racer_icon(r["color"], icon_size)
+        icon = make_racer_icon(r["color"], icon_size, name=r["name"])
         gx, gy = i % cols_, i // cols_
         x = x0 + gx * icon_size * 1.15
         y = y0 + gy * icon_size * 1.3
@@ -159,7 +160,7 @@ def render_heat_card(round_label, heat_label, heat_racers, theme, w=TOUR_WIDTH, 
     x = w / 2 - total_w / 2
     name_font = get_font(int(h * 0.032))
     for r in heat_racers:
-        icon = make_racer_icon(r["color"], icon_size)
+        icon = make_racer_icon(r["color"], icon_size, name=r["name"])
         img.alpha_composite(icon, (int(x), int(h * 0.48)))
         nw = d.textlength(r["name"], font=name_font)
         d.text((x + icon_size / 2 - nw / 2, h * 0.48 + icon_size + h * 0.02), r["name"],
@@ -171,7 +172,7 @@ def render_heat_card(round_label, heat_label, heat_racers, theme, w=TOUR_WIDTH, 
 def render_outro_card(champion, theme, w=TOUR_WIDTH, h=TOUR_HEIGHT):
     img = _bg_canvas(theme, w, h)
     d = ImageDraw.Draw(img, "RGBA")
-    icon = make_racer_icon(champion["color"], int(h * 0.22))
+    icon = make_racer_icon(champion["color"], int(h * 0.22), name=champion["name"])
     img.alpha_composite(icon, (int(w / 2 - icon.width / 2), int(h * 0.18)))
     title_font = get_font(int(h * 0.06))
     sub_font = get_font(int(h * 0.036))
@@ -256,7 +257,7 @@ def render_bracket_board(bracket, theme, caption, w=TOUR_WIDTH, h=TOUR_HEIGHT):
         d.ellipse([cx - box_h * 0.22, cy - box_h * 0.22, cx + box_h * 0.22, cy + box_h * 0.22],
                   outline=(150, 150, 160, 255), width=3)
     else:
-        icon = make_racer_icon(champion["color"], int(box_h * 0.55))
+        icon = make_racer_icon(champion["color"], int(box_h * 0.55), name=champion["name"])
         img.alpha_composite(icon, (int(cx - icon.width / 2), int(cy - icon.height * 0.85)))
         champ_font = get_font(int(box_h * 0.16))
         d2 = ImageDraw.Draw(img, "RGBA")
@@ -271,13 +272,15 @@ def render_bracket_board(bracket, theme, caption, w=TOUR_WIDTH, h=TOUR_HEIGHT):
 
 # --- Heat execution ---------------------------------------------------
 
-def _run_heat(seed, heat_racers, theme_seed):
-    race = simulate_race(
+def _run_heat(seed, heat_racers, theme_seed, qualifiers=2, enforce_quality=True):
+    needed = min(qualifiers, len(heat_racers))
+    race = generate_playable(lambda **kw: simulate_race(required_finishers=needed, **kw),
         w=TOUR_WIDTH, h=TOUR_HEIGHT, seed=seed, fps=TOUR_FPS,
         max_seconds=TOUR_HEAT_MAX_SECONDS, min_seconds=TOUR_HEAT_MIN_SECONDS,
-        forced_racers=heat_racers, required_finishers=min(2, len(heat_racers)),
-        rows=TOUR_ROWS,
+        forced_racers=heat_racers, required_finishers=needed,
+        rows=TOUR_ROWS, enforce_quality=enforce_quality,
     )
+    race['qualifier_count'] = needed
     clip = build_race_clip(race)
     sfx_array, sfx_sr = build_sfx_array(race)
     sfx_clip = AudioArrayClip(sfx_array, fps=sfx_sr).subclipped(0, clip.duration)
@@ -322,11 +325,14 @@ def generate_tournament_video(skip_upload: bool = False):
         # Round of 16
         round1_groups = [racers16[i:i + 4] for i in range(0, 16, 4)]
         round1_advancers = []
+        opening_race = None
         for hi, group in enumerate(round1_groups):
             _append(_static_clip(
                 render_heat_card("ROUND OF 16", f"Heat {hi + 1} of 4", group, theme), HEAT_CARD_SECONDS))
             heat_seed = seed * 1000 + 100 + hi
-            race, clip = _run_heat(heat_seed, group, seed)
+            race, clip = _run_heat(heat_seed, group, seed, enforce_quality=not skip_upload)
+            if opening_race is None:
+                opening_race = race
             _append(clip, race_bump_times(race))
             top2 = race["full_ranking"][:2]
             bracket["round1"][hi] = {"racers": group, "advancing_idx": top2}
@@ -343,7 +349,7 @@ def generate_tournament_video(skip_upload: bool = False):
             _append(_static_clip(
                 render_heat_card("ROUND OF 8", f"Heat {hi + 1} of 2", group, theme), HEAT_CARD_SECONDS))
             heat_seed = seed * 1000 + 200 + hi
-            race, clip = _run_heat(heat_seed, group, seed)
+            race, clip = _run_heat(heat_seed, group, seed, enforce_quality=not skip_upload)
             _append(clip, race_bump_times(race))
             top2 = race["full_ranking"][:2]
             bracket["round2"][hi] = {"racers": group, "advancing_idx": top2}
@@ -357,7 +363,7 @@ def generate_tournament_video(skip_upload: bool = False):
         final_group = qf_advancers[0] + qf_advancers[1]
         _append(_static_clip(render_heat_card("FINAL", "Championship Heat", final_group, theme), HEAT_CARD_SECONDS))
         heat_seed = seed * 1000 + 300
-        race, clip = _run_heat(heat_seed, final_group, seed)
+        race, clip = _run_heat(heat_seed, final_group, seed, qualifiers=1, enforce_quality=not skip_upload)
         _append(clip, race_bump_times(race))
         champion_idx = race["full_ranking"][0]
         champion = final_group[champion_idx]
@@ -367,12 +373,12 @@ def generate_tournament_video(skip_upload: bool = False):
 
         # A single cold-open teaser at the very front of the WHOLE video
         # (not one per heat, that would be excessive over 10-15 minutes) —
-        # built from the Final heat's own race data, now that it's known,
+        # sourced from the first heat so even the finalists stay unknown,
         # then spliced onto the front of the already-recorded `clips` list.
         # global_bump_times entries recorded so far are offsets into a
         # timeline that didn't yet include this teaser, so they need
         # shifting by its duration once it's prepended.
-        cold_open_clip = build_cold_open_clip(race)
+        cold_open_clip = build_cold_open_clip(opening_race)
         cold_open_audio_arr = build_cold_open_sfx(cold_open_clip.duration)
         cold_open_audio = AudioArrayClip(cold_open_audio_arr, fps=SFX_SR).subclipped(0, cold_open_clip.duration)
         cold_open_clip = cold_open_clip.with_audio(cold_open_audio)
@@ -391,8 +397,7 @@ def generate_tournament_video(skip_upload: bool = False):
 
         thumbnail_path = os.path.join(base_dir, "tournament_thumbnail.jpg")
         try:
-            thumb_img = render_bracket_board(bracket, theme, f"Champion: {champion['name']}!",
-                                              w=1280, h=720)
+            thumb_img = render_title_card(racers16, theme, seed, w=1280, h=720)
             Image.fromarray(thumb_img).save(thumbnail_path, "JPEG", quality=92)
             logger.info("✓ Tournament thumbnail дайын")
         except Exception as e:
