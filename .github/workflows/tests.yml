@@ -17,7 +17,7 @@ jobs:
           node-version: '22'
       - run: pip install -r requirements-dev.txt
       - run: python -m pytest -q
-      - run: node --test tests/web.test.cjs
+      - run: npm test
       - name: Install browser test tools
         run: |
           npm install --ignore-scripts --package-lock=false

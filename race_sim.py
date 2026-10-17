@@ -639,6 +639,7 @@ def _add_finish_sensor(space, geo):
     sensor.sensor = True
     sensor.collision_type = FINISH_TYPE
     space.add(sensor)
+    return sensor
 
 
 def build_wall_segments(geo, open_right, open_down, finish_col):
@@ -895,6 +896,26 @@ def _remove_inactive(space, bodies, shapes, active):
             space.remove(bodies[i], shape)
 
 
+def _step_and_order_finishes(space, dt, shapes, active, finish_log, winner, finish_surface_y):
+    # Collision callbacks share one physics timestamp, but their dispatch
+    # order does not say which racer's leading edge crossed first.
+    # Pymunk BB.top is maximum y, the lower edge in our downward-y world.
+    previous_bottoms = [shape.bb.top if active[i] else None for i, shape in enumerate(shapes)]
+    previous_count = len(finish_log)
+    space.step(dt)
+    if len(finish_log) == previous_count:
+        return
+    if len(finish_log) - previous_count > 1:
+        def crossing(event):
+            i = event[1]
+            before = previous_bottoms[i]
+            travel = shapes[i].bb.top - before
+            fraction = (finish_surface_y - before) / travel if travel > 0 else 0.0
+            return (max(0.0, min(1.0, fraction)), i)
+        finish_log[previous_count:] = sorted(finish_log[previous_count:], key=crossing)
+    winner[0] = finish_log[0][1]
+
+
 class _MotionRecovery:
     """Yield into a real neighbouring passage after sustained confined motion.
 
@@ -991,7 +1012,7 @@ def simulate_race(w, h, seed, fps=24, max_seconds=28, min_seconds=13, n_racers=N
         space.add(seg)
 
     fzx, fzy = geo.finish_zone_center(finish_col)
-    _add_finish_sensor(space, geo)
+    finish_sensor = _add_finish_sensor(space, geo)
 
     # Racers collide as squares, not circles — a circle-vs-circle/wall
     # contact normal always passes straight through the circle's own
@@ -1202,6 +1223,7 @@ def simulate_race(w, h, seed, fps=24, max_seconds=28, min_seconds=13, n_racers=N
     finish_frame_flags = {}  # frame_idx -> [(racer_idx, x, y), ...]
     bump_frame_flags = {}  # frame_idx -> (x, y, intensity, kind)
     frame_idx = 0
+    last_frame_step = 0
 
     # Short-range separation force: every racer's steering target is picked
     # from the maze graph alone, with zero awareness of where any OTHER
@@ -1297,7 +1319,8 @@ def simulate_race(w, h, seed, fps=24, max_seconds=28, min_seconds=13, n_racers=N
             fy = mass * steer_y + math.sin(jitter_ang) * jitter_mag + rfy
             bodies[i].apply_force_at_world_point((fx, fy), bodies[i].position)
 
-        space.step(dt)
+        _step_and_order_finishes(space, dt, shapes, active, finish_log, winner_idx,
+                                finish_sensor.bb.bottom)
         _remove_inactive(space, bodies, shapes, active)
 
         if step_counter["n"] % STUCK_CHECK_STEPS == 0:
@@ -1358,7 +1381,7 @@ def simulate_race(w, h, seed, fps=24, max_seconds=28, min_seconds=13, n_racers=N
                     recovery_until[i] = 0
                     progress_stall[i] = 0
 
-        if step_counter["n"] % steps_per_frame == 0:
+        if step_counter["n"] % steps_per_frame == 0 or step_counter["n"] == max_steps:
             pos = []
             for i in range(n_racers):
                 if active[i]:
@@ -1378,16 +1401,17 @@ def simulate_race(w, h, seed, fps=24, max_seconds=28, min_seconds=13, n_racers=N
                            "step": step_counter["n"]})
             frame_idx += 1
 
-            if finish_log and finish_log[-1][0] > step_counter["n"] - steps_per_frame:
-                events = [(fl[1], fl[2], fl[3]) for fl in finish_log if fl[0] > step_counter["n"] - steps_per_frame]
+            if finish_log and finish_log[-1][0] > last_frame_step:
+                events = [(fl[1], fl[2], fl[3]) for fl in finish_log if fl[0] > last_frame_step]
                 if events:
                     finish_frame_flags[frame_idx - 1] = events
 
-            recent_bumps = [b for b in bump_log if b[0] > step_counter["n"] - steps_per_frame]
+            recent_bumps = [b for b in bump_log if b[0] > last_frame_step]
             if recent_bumps:
                 best = max(recent_bumps, key=lambda b: b[3])
                 bump_frame_flags[frame_idx - 1] = (best[1], best[2], best[3], best[4])
 
+            last_frame_step = step_counter["n"]
             if not any(active) or len(finish_log) >= required_finishers:
                 break
 
@@ -1553,7 +1577,7 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=32, min_seconds=14, n_racers
         space.add(seg)
 
     fzx, fzy = geo.finish_zone_center(finish_col)
-    _add_finish_sensor(space, geo)
+    finish_sensor = _add_finish_sensor(space, geo)
 
     # The storm is a timed hazard, not a solid moving collider. A solid
     # full-width wall squeezes racers against internal maze walls and
@@ -1834,6 +1858,7 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=32, min_seconds=14, n_racers
     elim_frame_flags = {}
     bump_frame_flags = {}
     frame_idx = 0
+    last_frame_step = 0
 
     while step_counter["n"] < max_steps:
         step_counter["n"] += 1
@@ -1914,7 +1939,8 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=32, min_seconds=14, n_racers
             fy = mass * steer_y + math.sin(jitter_ang) * jitter_mag
             bodies[i].apply_force_at_world_point((fx, fy), bodies[i].position)
 
-        space.step(dt)
+        _step_and_order_finishes(space, dt, shapes, active, finish_log, winner_idx_box,
+                                finish_sensor.bb.bottom)
         _remove_inactive(space, bodies, shapes, active)
 
         if step_counter["n"] % STUCK_CHECK_STEPS == 0:
@@ -1975,7 +2001,7 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=32, min_seconds=14, n_racers
                     recovery_until[i] = 0
                     progress_stall[i] = 0
 
-        if step_counter["n"] % steps_per_frame == 0:
+        if step_counter["n"] % steps_per_frame == 0 or step_counter["n"] == max_steps:
             pos = []
             for i in range(n_racers):
                 if active[i]:
@@ -1991,21 +2017,22 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=32, min_seconds=14, n_racers
                            "storm_exposure": [s / PHYSICS_HZ for s in outside_zone_steps]})
             frame_idx += 1
 
-            if finish_log and finish_log[-1][0] > step_counter["n"] - steps_per_frame:
-                events = [(fl[1], fl[2], fl[3]) for fl in finish_log if fl[0] > step_counter["n"] - steps_per_frame]
+            if finish_log and finish_log[-1][0] > last_frame_step:
+                events = [(fl[1], fl[2], fl[3]) for fl in finish_log if fl[0] > last_frame_step]
                 if events:
                     finish_frame_flags[frame_idx - 1] = events
 
-            if elim_log and elim_log[-1][0] > step_counter["n"] - steps_per_frame:
-                events = [(el[1], el[2], el[3]) for el in elim_log if el[0] > step_counter["n"] - steps_per_frame]
+            if elim_log and elim_log[-1][0] > last_frame_step:
+                events = [(el[1], el[2], el[3]) for el in elim_log if el[0] > last_frame_step]
                 if events:
                     elim_frame_flags[frame_idx - 1] = events
 
-            recent_bumps = [b for b in bump_log if b[0] > step_counter["n"] - steps_per_frame]
+            recent_bumps = [b for b in bump_log if b[0] > last_frame_step]
             if recent_bumps:
                 best = max(recent_bumps, key=lambda b: b[3])
                 bump_frame_flags[frame_idx - 1] = (best[1], best[2], best[3], best[4])
 
+            last_frame_step = step_counter["n"]
             if finish_log or sum(active) <= 1:
                 break
 
@@ -2343,12 +2370,15 @@ def simulate_drop(w, h, seed, fps=24, max_seconds=22, min_seconds=8, n_racers=No
     space.add(finish_shape)
 
     bodies, shapes = [], []
+    half = racer_radius * 0.85
     spacing = track_w / (n_racers + 1)
+    spawn_jitter = []
     for i in range(n_racers):
-        cx = left + spacing * (i + 1) + rng.uniform(-8, 8)
-        cy = top_y + rng.uniform(-6, 6)
+        jx, jy = rng.uniform(-8, 8), rng.uniform(-6, 6)
+        spawn_jitter.append((jx, jy))
+        cx = left + spacing * (i + 1) + jx
+        cy = top_y + jy
         mass = racers[i]["weight"]
-        half = racer_radius * 0.85
         body = pymunk.Body(mass=mass, moment=pymunk.moment_for_box(mass, (half * 2, half * 2)))
         body.position = (cx, cy)
         body.angle = rng.uniform(-0.3, 0.3)
@@ -2359,6 +2389,26 @@ def simulate_drop(w, h, seed, fps=24, max_seconds=22, min_seconds=8, n_racers=No
         space.add(body, shape)
         bodies.append(body)
         shapes.append(shape)
+
+    if n_racers > 8 or any(space.shape_query(shape) for shape in shapes):
+        # Larger rosters need multiple rows. Keep valid established starts
+        # unchanged, but also repair actual overlap in small video sizes.
+        # Include rotation and jitter in the clearance; draw the grid with
+        # a separate RNG so roster order never reserves its front row.
+        reach = half * (math.cos(0.3) + math.sin(0.3))
+        capacity = max(1, min(8, int(track_w / (2 * reach + 2 * 8 + 1)) - 1))
+        row_count = math.ceil(n_racers / capacity)
+        starts = []
+        for row in range(row_count):
+            count = (n_racers + row_count - row - 1) // row_count
+            spacing = track_w / (count + 1)
+            offset = spacing * (0.25 if row % 2 else -0.25)
+            starts.extend((left + spacing * (col + 1) + offset,
+                           top_y + row * (2 * reach + 2 * 6 + 1)) for col in range(count))
+        random.Random(f'{seed}:drop-starting-grid').shuffle(starts)
+        for body, (cx, cy), (jx, jy) in zip(bodies, starts, spawn_jitter):
+            body.position = (cx + jx, cy + jy)
+            space.reindex_shapes_for_body(body)
 
     finished = [False] * n_racers
     active = [True] * n_racers
@@ -2416,13 +2466,15 @@ def simulate_drop(w, h, seed, fps=24, max_seconds=22, min_seconds=8, n_racers=No
     finish_frame_flags = {}
     bump_frame_flags = {}
     frame_idx = 0
+    last_frame_step = 0
 
     while step_counter["n"] < max_steps:
         step_counter["n"] += 1
-        space.step(dt)
+        _step_and_order_finishes(space, dt, shapes, active, finish_log, winner_idx_box,
+                                finish_shape.bb.bottom)
         _remove_inactive(space, bodies, shapes, active)
 
-        if step_counter["n"] % steps_per_frame == 0:
+        if step_counter["n"] % steps_per_frame == 0 or step_counter["n"] == max_steps:
             pos = []
             for i in range(n_racers):
                 if active[i]:
@@ -2434,16 +2486,17 @@ def simulate_drop(w, h, seed, fps=24, max_seconds=22, min_seconds=8, n_racers=No
                             "blade_angles": [-math.degrees(bl["body"].angle) for bl in blades]})
             frame_idx += 1
 
-            if finish_log and finish_log[-1][0] > step_counter["n"] - steps_per_frame:
-                events = [(fl[1], fl[2], fl[3]) for fl in finish_log if fl[0] > step_counter["n"] - steps_per_frame]
+            if finish_log and finish_log[-1][0] > last_frame_step:
+                events = [(fl[1], fl[2], fl[3]) for fl in finish_log if fl[0] > last_frame_step]
                 if events:
                     finish_frame_flags[frame_idx - 1] = events
 
-            recent_bumps = [b for b in bump_log if b[0] > step_counter["n"] - steps_per_frame]
+            recent_bumps = [b for b in bump_log if b[0] > last_frame_step]
             if recent_bumps:
                 best = max(recent_bumps, key=lambda b: b[3])
                 bump_frame_flags[frame_idx - 1] = (best[1], best[2], best[3], best[4])
 
+            last_frame_step = step_counter["n"]
             if not any(active) or finish_log:
                 break
 

@@ -4,6 +4,45 @@ Latest update: 2026-10-18. Update this file whenever a setup step changes —
 session/machine switches have already lost unsaved browser work once, this
 file is the durable record.
 
+## Cup play, race links and finish accuracy (2026-10-18)
+
+- Added Quick play, a three-round Cup across distinct arenas, recent-result
+  replays and validated versioned race links. Cup rosters remain the same
+  while starting slots rotate. Only actual finishers score 5/3/1; unfinished
+  racers score zero and equal totals share the Cup. Replay cannot rescore a
+  round. Shared links reproduce the heat inputs without a server.
+- Added playback speed controls that retain fixed 120Hz simulation steps,
+  course progress, leader/finish events, collision cues and camera framing
+  that adapts to short or wide screens. Offscreen selected racers receive
+  an edge indicator. Finished standings now say FINAL and explain that
+  nonfinishers are ordered by their progress at the stop.
+- Timeout leaders no longer count as wins. Recent successful results and
+  counted race keys persist locally, with bounded history and validated
+  inputs. Results and history use the winner's actual crossing time; tied
+  Cup champions each appear in the result portrait. Muting or pausing
+  cancels scheduled tones.
+- Corrected same-step finish ordering in JavaScript and Python. Winners
+  and podiums use the interpolated crossing time rather than roster order
+  or Pymunk callback order. Browser seed multiplication now preserves exact
+  unsigned 32-bit arithmetic for high random seeds.
+- Python Drop starts accommodate larger explicit rosters without overlap;
+  terminal partial-frame captures keep the recorded result visible when a
+  time boundary falls between video frames.
+- Shared `audio_mix.py` decodes music into an owned buffer and closes the
+  FFmpeg source reader before rendering. Looping, ducking and short fades
+  operate on that buffer; a decode error leaves the SFX track available.
+- Playability sweep: 960 browser runs across ten arenas, varied rosters and
+  low/high 32-bit seeds all finished with finite positions. The audit found
+  no obstacle-free Drop winner; all requested Cup podiums filled.
+- Final validation: 679 Python tests and 19 Node tests passed. Browser
+  scenarios passed at 1440x1000, 390x844, 360x640 and 844x390 with no browser
+  errors, horizontal overflow or undersized touch buttons. These cover
+  real podium scoring, replay/share, finish times, tied portraits, camera
+  fallback, saved-stat validation, timeout handling and playback speed.
+- Offline Race, Battle, Drop and 48-second Tournament videos encoded and
+  decoded successfully with finite, audible, unclipped audio; no publishing
+  service was contacted. Final desktop/phone results were visually reviewed.
+
 ## Character identities and offline music (2026-10-18)
 
 - Completed the character redesign deferred during the arena update. All

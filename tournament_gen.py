@@ -13,6 +13,7 @@ between rounds so the tree of matchups is visually trackable, same
 code-generated/no-assets style as everything else in this project.
 """
 import os
+from audio_mix import prepare_music
 import random
 from race_quality import generate_playable
 import logging
@@ -21,14 +22,13 @@ import traceback
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter
 from moviepy import (
-    ImageClip, AudioFileClip, AudioArrayClip, CompositeAudioClip,
-    concatenate_videoclips, concatenate_audioclips,
+    ImageClip, AudioArrayClip, CompositeAudioClip, concatenate_videoclips,
 )
 from dotenv import load_dotenv
 
 from race_sim import (
     simulate_race, build_race_clip, build_sfx_array, make_racer_icon, get_font,
-    pick_theme, build_duck_envelope, race_bump_times, RACER_POOL, SR as SFX_SR,
+    pick_theme, race_bump_times, RACER_POOL, SR as SFX_SR,
     build_cold_open_clip, build_cold_open_sfx,
 )
 from video_gen import (
@@ -414,22 +414,14 @@ def generate_tournament_video(skip_upload: bool = False):
         try:
             final_audio = final_video.audio
             if music_path:
-                music_clip = AudioFileClip(music_path)
-                if music_clip.duration < duration:
-                    loops_needed = int(duration / music_clip.duration) + 1
-                    music_clip = concatenate_audioclips([music_clip] * loops_needed)
-                music_clip = music_clip.subclipped(0, duration).with_volume_scaled(MUSIC_VOLUME)
                 try:
-                    music_array = music_clip.to_soundarray(fps=SFX_SR)
-                    if music_array.ndim == 1:
-                        music_array = np.stack([music_array, music_array], axis=1)
-                    envelope = build_duck_envelope(len(music_array), SFX_SR, global_bump_times)
-                    music_clip = AudioArrayClip(music_array * envelope[:, None], fps=SFX_SR)
+                    music_clip = prepare_music(music_path, duration, MUSIC_VOLUME, global_bump_times)
                 except Exception as e:
-                    logger.warning(f"⚠️ Ducking қатесі, ducking-сіз жалғастырылады: {e}")
+                    logger.warning(f"⚠️ Музыка оқылмады, SFX-пен жалғасады: {e}")
 
-                final_audio = CompositeAudioClip([final_audio, music_clip]) if final_audio else music_clip
-                if music_attribution:
+                if music_clip is not None:
+                    final_audio = CompositeAudioClip([final_audio, music_clip]) if final_audio else music_clip
+                if music_clip is not None and music_attribution:
                     video_description += f"\n\n{music_attribution}"
                 logger.info(f"🎵 Музыка таңдалды: {os.path.basename(music_path)}")
             else:

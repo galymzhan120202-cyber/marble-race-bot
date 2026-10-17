@@ -7,7 +7,7 @@ const root=path.resolve(__dirname,'..');
 const source=fs.readFileSync(path.join(root,'web/game-core.js'),'utf8');
 // Evaluate the pure core in this realm: VM proxying Math on every physics
 // operation made the old seeded suite needlessly slow. No DOM is involved.
-const api=new Function(source+'\nreturn {buildRace,stepRace,buildDrop,stepDrop,RACER_POOL,MAZE_ARENAS,DROP_ARENAS,DROP_ARENA_SPINNERS,wallBlocks,PHYSICS_HZ};')();
+const api=new Function(source+'\nreturn {buildRace,stepRace,buildDrop,stepDrop,drawRace,drawDrop,drawSelectedRacerIndicator,recordFinishCrossings,makeRng,buildMazeLayout,RACER_POOL,MAZE_ARENAS,DROP_ARENAS,DROP_ARENA_SPINNERS,wallBlocks,PHYSICS_HZ};')();
 const roster=n=>api.RACER_POOL.slice(0,n);
 const finite=r=>r.racers.every(p=>[p.x,p.y,p.vx,p.vy,p.angle].every(Number.isFinite));
 
@@ -116,4 +116,114 @@ test('camera focus leaves seeded physics unchanged and stays inside the world',(
 test('unknown layout IDs safely use the original arenas',()=>{
   assert.equal(api.buildRace(1,roster(4),'m','missing').arenaKind,'classic');
   assert.equal(api.buildDrop(1,roster(4),'missing').arenaKind,'classic_plinko');
+});
+
+function finishFixture(kind,distances){
+  const sim=kind==='race'?api.buildRace(7,roster(distances.length),'s'):api.buildDrop(7,roster(distances.length));
+  const radius=sim.geo?sim.geo.racerRadius:sim.racerRadius;
+  const line=sim.geo?sim.geo.topBorder+sim.rows*sim.geo.cell+sim.geo.finishDepth*.45:sim.finishY;
+  const width=sim.geo?sim.geo.w:sim.stageW;
+  sim.racers.forEach((r,i)=>{
+    r.x=width*(i+1)/(distances.length+1);r.y=line-radius-distances[i];r.vx=0;r.vy=1200;
+    if(sim.geo){r.lastCell=[...sim.finishCell];r.target=[r.x,sim.fzy];}
+  });
+  return sim;
+}
+
+test('same-step finishes use the crossing time in both modes, not roster priority',()=>{
+  for(const kind of ['race','drop']) for(const distances of [[6,1],[1,6]]){
+    const sim=finishFixture(kind,distances),step=kind==='race'?api.stepRace:api.stepDrop;
+    step(sim,0);
+    const first=distances.indexOf(1);
+    assert.equal(sim.winner.idx,first,`${kind}: later crossing incorrectly won`);
+    assert.deepEqual(sim.finishOrder,[first,1-first]);
+    assert.ok(sim.racers[first].finishStep<sim.racers[1-first].finishStep);
+    assert.ok(sim.racers.every(r=>r.finishStep>=0&&r.finishStep<=1));
+    assert.equal(sim.complete,true);
+    const snapshot=JSON.stringify(sim.racers),endStep=sim.step;
+    step(sim,1/120);
+    assert.equal(sim.step,endStep);assert.equal(JSON.stringify(sim.racers),snapshot,'completed result moved');
+  }
+});
+
+test('exact crossing ties are deterministic',()=>{
+  const sim=finishFixture('drop',[2,2]),active=[...sim.racers];
+  const prior=new Map(active.map(r=>[r,98]));
+  active.forEach(r=>r.y=102);sim.step=10;sim.finishTarget=2;
+  api.recordFinishCrossings(sim,active,prior,0,100);
+  assert.deepEqual(sim.finishOrder,[0,1]);
+  assert.deepEqual(sim.racers.map(r=>r.finishStep),[9.5,9.5]);
+  assert.equal(sim.complete,true);
+});
+
+test('podium mode continues after the winner, follows contenders and freezes only at its target',()=>{
+  for(const kind of ['race','drop']){
+    const sim=finishFixture(kind,[1,450,700]),step=kind==='race'?api.stepRace:api.stepDrop;
+    sim.finishTarget=3;sim.followYou=true;sim.youIdx=0;
+    const worldH=sim.geo?sim.geo.imgH:sim.worldH;
+    sim.viewportH=400;sim.cameraY=0;
+    step(sim,0);
+    assert.equal(sim.winner.idx,0);assert.equal(sim.complete,false);
+    assert.deepEqual(sim.finishOrder,[0]);
+    const winnerPose=[sim.winner.x,sim.winner.y,sim.winner.angle];
+    const lockedCamera=Math.max(0,Math.min(worldH-sim.viewportH,sim.winner.y-sim.viewportH*.42));
+    assert.ok(sim.cameraY<lockedCamera,'camera prematurely locked on the first finisher');
+    const radius=sim.geo?sim.geo.racerRadius:sim.racerRadius;
+    const line=sim.geo?sim.geo.topBorder+sim.rows*sim.geo.cell+sim.geo.finishDepth*.45:sim.finishY;
+    sim.racers[2].y=line-radius-1;sim.racers[2].vy=1200;
+    sim.racers[1].y=line-radius-6;sim.racers[1].vy=1200;
+    step(sim,1/120);
+    assert.equal(sim.complete,true);assert.equal(sim.winner.idx,0);
+    assert.deepEqual(sim.finishOrder,[0,2,1]);
+    assert.deepEqual([sim.winner.x,sim.winner.y,sim.winner.angle],winnerPose,'finished racer moved while podium filled');
+    assert.equal(sim.cameraY,lockedCamera);
+  }
+});
+
+test('all layouts produce actual podiums with varied characters and field sizes',()=>{
+  for(const kind of ['race','drop']) for(const arena of kind==='race'?api.MAZE_ARENAS:api.DROP_ARENAS)
+    for(const n of [2,4,8]) for(const seed of [0,7,41]){
+      const varied=Array.from({length:n},(_,i)=>api.RACER_POOL[(i*3+seed+n)%api.RACER_POOL.length]);
+      const sim=kind==='race'?api.buildRace(seed,varied,'m',arena.id):api.buildDrop(seed,varied,arena.id);
+      const step=kind==='race'?api.stepRace:api.stepDrop;
+      sim.finishTarget=Math.min(3,n);
+      while(!sim.complete&&sim.step<(kind==='race'?90:60)*api.PHYSICS_HZ) step(sim,sim.step/api.PHYSICS_HZ);
+      const label=`${kind}/${arena.id}/${n}/${seed}`;
+      assert.equal(sim.complete,true,`${label}: podium timed out`);
+      assert.ok(finite(sim));assert.ok(sim.finishOrder.length>=sim.finishTarget);
+      assert.equal(new Set(sim.finishOrder).size,sim.finishOrder.length);
+      assert.equal(sim.finishOrder[0],sim.winner.idx);
+      assert.ok(sim.finishOrder.every(idx=>sim.racers[idx].finished&&!sim.racers[idx].active));
+      const steps=sim.finishOrder.map(idx=>sim.racers[idx].finishStep);
+      assert.deepEqual(steps,[...steps].sort((a,b)=>a-b));
+    }
+});
+
+test('32-bit maze seeds retain their exact low bits',()=>{
+  for(const seed of [3000000001,4294967295]){
+    const sim=api.buildRace(seed,roster(4),'m','classic');
+    const mixed=Number((BigInt(seed)*2654435761n)&0xffffffffn);
+    const rng=api.makeRng(mixed),expected=api.buildMazeLayout(sim.cols,sim.rows,rng,'classic');
+    assert.deepEqual(sim.openRight,expected.openRight);
+    assert.deepEqual(sim.openDown,expected.openDown);
+    assert.equal(sim.finishCol,rng.int(sim.cols));
+  }
+});
+
+test('selected racer indicator follows the live viewport and is absent when visible',()=>{
+  const texts=[],ctx=new Proxy({}, {get:(_,key)=>{
+    if(key==='fillText') return text=>texts.push(text);
+    if(key==='createRadialGradient') return ()=>({addColorStop(){}});
+    return ()=>{};
+  }});
+  for(const kind of ['race','drop']){
+    const sim=kind==='race'?api.buildRace(7,roster(4),'m'):api.buildDrop(7,roster(4));
+    sim.cameraY=400;sim.viewportH=820;
+    for(const [y,expected] of [[100,'↑'],[1300,'↓'],[600,null]]){
+      sim.racers[2].y=y;texts.length=0;
+      (kind==='race'?api.drawRace:api.drawDrop)(ctx,sim,{},0,2);
+      assert.equal(texts.length,expected?1:0);
+      if(expected) assert.equal(texts[0],`${expected} YOU · Cocoa`);
+    }
+  }
 });

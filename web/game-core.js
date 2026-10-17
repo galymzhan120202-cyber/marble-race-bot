@@ -299,7 +299,8 @@ function buildRace(seed, roster, arenaSize, arenaKind="classic"){
   const cols = preset.cols;
   const rows = Math.max(10, Math.min(22, preset.rowsBase + Math.floor((n-6)/2)));
 
-  const mazeRng = makeRng((seed*2654435761) >>> 0);
+  // Keep all 32 seed bits: floating multiplication loses low bits for large seeds.
+  const mazeRng = makeRng(Math.imul(seed,2654435761) >>> 0);
   const {openRight, openDown} = buildMazeLayout(cols, rows, mazeRng, arenaKind);
   const finishCol = mazeRng.int(cols);
   const finishCell = [rows-1, finishCol];
@@ -361,7 +362,7 @@ function buildRace(seed, roster, arenaSize, arenaKind="classic"){
     openRight, openDown, distField,
     spawnCells, viewportH:Math.min(1180,geo.imgH), cameraY:0, followYou:false,
     recomputeTarget,
-    step:0, winner:null, finishedCount:0, bumps:[],
+    step:0, winner:null, finishedCount:0, finishOrder:[], finishTarget:1, complete:false, bumps:[],
   };
 }
 
@@ -399,8 +400,46 @@ function wallBlocks(race, from, to, radius=0){
 }
 
 function updateRaceCamera(sim, focusY, worldH){
-  const target=Math.max(0,Math.min(Math.max(0,worldH-sim.viewportH),focusY-sim.viewportH*.42));
-  sim.cameraY=sim.winner ? target : sim.cameraY+(target-sim.cameraY)*.045;
+  const maxY=Math.max(0,worldH-sim.viewportH);
+  const target=Math.max(0,Math.min(maxY,focusY-sim.viewportH*.42));
+  sim.cameraY=Math.max(0,Math.min(maxY,sim.complete ? target : sim.cameraY+(target-sim.cameraY)*.045));
+}
+
+function recordFinishCrossings(sim, active, previousY, radius, lineY){
+  const centerLine=lineY-radius;
+  const crossings=active.filter(r=>r.y>=centerLine).map(r=>{
+    const start=previousY.get(r), travelled=r.y-start;
+    const fraction=start>=centerLine?0:Math.max(0,Math.min(1,(centerLine-start)/travelled));
+    return {r,fraction};
+  });
+  // Interpolate within this physics step; roster order only breaks exact ties.
+  crossings.sort((a,b)=>a.fraction-b.fraction || a.r.idx-b.r.idx);
+  for(const {r,fraction} of crossings){
+    r.finished=true; r.active=false; r.finishStep=sim.step-1+fraction;
+    sim.finishOrder.push(r.idx);
+    sim.finishedCount++;
+    if(!sim.winner) sim.winner=r;
+    sim.resultReason="finish";
+  }
+  const target=Math.min(sim.racers.length,Math.max(1,Math.floor(sim.finishTarget)||1));
+  sim.complete=sim.finishedCount>=target;
+}
+
+function drawSelectedRacerIndicator(ctx,sim,youIdx,width,viewportH,cameraY,radius){
+  const selected=sim.racers[youIdx];
+  if(!selected) return;
+  const above=selected.y+radius<cameraY, below=selected.y-radius>cameraY+viewportH;
+  if(!above&&!below) return;
+  const font=Math.max(14,width*.022), badgeW=font*10.5, badgeH=font*2.1;
+  const x=Math.max(badgeW/2+8,Math.min(width-badgeW/2-8,selected.x));
+  const y=above?badgeH/2+10:viewportH-badgeH/2-10;
+  ctx.save();
+  ctx.beginPath();ctx.roundRect(x-badgeW/2,y-badgeH/2,badgeW,badgeH,10);
+  ctx.fillStyle="rgba(8,18,32,.94)";ctx.fill();ctx.strokeStyle="#67e8f9";ctx.lineWidth=2;ctx.stroke();
+  ctx.fillStyle="#e9f8ff";ctx.textAlign="center";ctx.textBaseline="middle";
+  ctx.font=`700 ${font}px system-ui,sans-serif`;
+  ctx.fillText(`${above?"↑":"↓"} YOU · ${selected.name}`,x,y);
+  ctx.restore();
 }
 
 function recordTrails(sim){
@@ -456,6 +495,7 @@ function navigationTarget(race, rc){
 }
 
 function stepRace(race, tSec){
+  if(race.complete) return;
   const {geo, racers, walls} = race;
   race.step++;
   const step = race.step;
@@ -465,6 +505,7 @@ function stepRace(race, tSec){
   const REPEL_GATE = MAX_SPEED*0.25;
 
   const active = racers.filter(r=>r.active);
+  const previousY = new Map(active.map(r=>[r,r.y]));
   const repel = new Map(active.map(r=>[r,[0,0]]));
   for(let a=0;a<active.length;a++) for(let b=a+1;b<active.length;b++){
     const ra=active[a], rb=active[b];
@@ -583,14 +624,8 @@ function stepRace(race, tSec){
   for (const rc of active){
     rc.angle += rc.angularVel*DT;
     rc.angularVel *= 0.94;
-    const [fx,fy] = [race.fzx, race.fzy];
-    if (rc.y+geo.racerRadius >= geo.topBorder+race.rows*geo.cell+geo.finishDepth*.45){
-      rc.finished = true; rc.active = false; rc.finishStep = step;
-      race.finishedCount++;
-      if (!race.winner) race.winner = rc;
-      race.resultReason="finish";
-    }
   }
+  recordFinishCrossings(race,active,previousY,geo.racerRadius,geo.topBorder+race.rows*geo.cell+geo.finishDepth*.45);
 
   // stuck / progress-stall recovery
   if (step % STUCK_CHECK_STEPS === 0){
@@ -633,8 +668,10 @@ function stepRace(race, tSec){
     }
   }
   recordTrails(race);
-  const focus=race.winner || (race.followYou && racers[race.youIdx]) ||
-    racers.reduce((best,r)=>race.distField[r.lastCell[0]][r.lastCell[1]]<race.distField[best.lastCell[0]][best.lastCell[1]]?r:best,racers[0]);
+  const contenders=racers.filter(r=>r.active), pool=contenders.length?contenders:racers;
+  const selected=racers[race.youIdx];
+  const focus=(race.complete&&race.winner) || (race.followYou&&selected?.active&&selected) ||
+    pool.reduce((best,r)=>race.distField[r.lastCell[0]][r.lastCell[1]]<race.distField[best.lastCell[0]][best.lastCell[1]]?r:best,pool[0]);
   updateRaceCamera(race,focus.y,geo.imgH);
 }
 
@@ -712,6 +749,7 @@ function drawRace(ctx, race, offscreen, tSec, youIdx){
     ctx.restore();
   }
   ctx.restore();
+  drawSelectedRacerIndicator(ctx,race,youIdx,geo.w,viewportH,cameraY,geo.racerRadius);
 }
 
 /* =========================================================================
@@ -848,18 +886,20 @@ function buildDrop(seed, roster, arenaKind="classic_plinko"){
     ...r, idx:i,
     x: left+spacing*(i+1)+rng.range(-8,8), y: topY+rng.range(-6,6),
     vx:0, vy:0, angle: rng.range(-0.3,0.3), angularVel:0,
-    finished:false, active:true, obstacleContacts:new Set(),
+    finished:false, active:true, finishStep:null, obstacleContacts:new Set(),
   }));
 
   return {
     seed, arenaKind, left, right, trackW, racerRadius, pegRadius, topY, trackH, finishY,
-    pegs, blades, racers, step:0, winner:null, finishedCount:0, bumps:[],
+    pegs, blades, racers, step:0, winner:null, finishedCount:0, finishOrder:[], finishTarget:1, complete:false, bumps:[],
     stageW, worldH: finishY + h*0.15, cameraY:0, viewportH:820, followYou:false,
   };
 }
 function stepDrop(drop, tSec){
+  if(drop.complete) return;
   drop.step++;
   const {racers, pegs, blades, left, right, racerRadius, pegRadius, finishY} = drop;
+  const active=racers.filter(r=>r.active), previousY=new Map(active.map(r=>[r,r.y]));
   for (const b of blades) b.angle += b.angularVel*DT;
 
   for (const rc of racers){
@@ -928,16 +968,14 @@ function stepDrop(drop, tSec){
     }
   }
   for (const rc of racers){
+    if(!rc.active) continue;
     rc.angle += rc.angularVel*DT; rc.angularVel *= 0.95;
-    if (rc.active && rc.y+racerRadius >= finishY){
-      rc.active=false; rc.finished=true; drop.finishedCount++;
-      if (!drop.winner) drop.winner = rc;
-      drop.resultReason="finish";
-    }
   }
+  recordFinishCrossings(drop,active,previousY,racerRadius,finishY);
   const activeR = racers.filter(r=>r.active);
   const pool = activeR.length ? activeR : racers;
-  const followed=drop.winner || (drop.followYou && racers[drop.youIdx]);
+  const selected=racers[drop.youIdx];
+  const followed=(drop.complete&&drop.winner) || (drop.followYou&&selected?.active&&selected);
   const focusY=followed ? followed.y : pool.reduce((m,r)=>Math.max(m,r.y),drop.topY);
   recordTrails(drop);
   updateRaceCamera(drop,focusY,drop.worldH);
@@ -1015,6 +1053,7 @@ function drawDrop(ctx, drop, offscreen, tSec, youIdx){
     ctx.restore();
   }
   ctx.restore();
+  drawSelectedRacerIndicator(ctx,drop,youIdx,stageW,viewportH,cameraY,drop.racerRadius);
 }
 
 /* =========================================================================

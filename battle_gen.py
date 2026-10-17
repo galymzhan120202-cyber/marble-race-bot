@@ -9,18 +9,18 @@ YouTube channel, OAuth credentials, Openverse music, SFX synthesis and
 Telegram notify helpers with video_gen.py.
 """
 import os
+from audio_mix import prepare_music
 import random
 from race_quality import generate_playable
 import logging
 import traceback
 
-import numpy as np
-from moviepy import AudioFileClip, AudioArrayClip, CompositeAudioClip, concatenate_videoclips, concatenate_audioclips
+from moviepy import AudioArrayClip, CompositeAudioClip, concatenate_videoclips
 from dotenv import load_dotenv
 
 from race_sim import (
     simulate_battle, build_battle_clip, build_sfx_array, generate_thumbnail,
-    build_duck_envelope, race_bump_times, SR as SFX_SR,
+    race_bump_times, SR as SFX_SR,
     build_battle_cold_open_clip, build_cold_open_sfx,
 )
 from video_gen import (
@@ -147,23 +147,13 @@ def generate_battle_video(skip_upload: bool = False, n_racers: int = None):
             music_path, music_attribution = pick_background_music(duration, allow_network=not skip_upload)
 
             if music_path:
-                music_clip = AudioFileClip(music_path)
-                if music_clip.duration < duration:
-                    loops_needed = int(duration / music_clip.duration) + 1
-                    music_clip = concatenate_audioclips([music_clip] * loops_needed)
-                music_clip = music_clip.subclipped(0, duration).with_volume_scaled(MUSIC_VOLUME)
-
                 try:
-                    music_array = music_clip.to_soundarray(fps=SFX_SR)
-                    if music_array.ndim == 1:
-                        music_array = np.stack([music_array, music_array], axis=1)
-                    envelope = build_duck_envelope(len(music_array), SFX_SR, race_bump_times(race))
-                    music_clip = AudioArrayClip(music_array * envelope[:, None], fps=SFX_SR)
+                    music_clip = prepare_music(music_path, duration, MUSIC_VOLUME, race_bump_times(race))
                 except Exception as e:
-                    logger.warning(f"⚠️ Ducking қатесі, ducking-сіз жалғастырылады: {e}")
-
-                audio_tracks.append(music_clip)
-                if music_attribution:
+                    logger.warning(f"⚠️ Музыка оқылмады, SFX-пен жалғасады: {e}")
+                if music_clip is not None:
+                    audio_tracks.append(music_clip)
+                if music_clip is not None and music_attribution:
                     video_description += f"\n\n{music_attribution}"
                 logger.info(f"🎵 Музыка таңдалды: {os.path.basename(music_path)}")
             else:

@@ -10,6 +10,7 @@
   <link rel="stylesheet" href="web/game.css">
   <script src="web/game-core.js" defer></script>
   <script src="assets/racers/catalog.js" defer></script>
+  <script src="web/game-session.js" defer></script>
   <script src="web/game.js" defer></script>
 </head>
 <body data-screen="menu">
@@ -24,11 +25,13 @@
   </header>
   <main id="main" tabindex="-1">
     <section class="screen active" data-screen="menu" id="screen-menu" aria-labelledby="menu-title">
+      <p id="link-notice" class="link-notice" hidden role="status"></p>
       <div class="hero-copy">
         <p class="eyebrow"><span></span>YOUR NEXT PHOTO FINISH</p>
         <h1 id="menu-title">Pick your side.<br>Follow the <em>chaos.</em></h1>
         <p class="hero-description">A cloud, a banana, a boba cup…<br>Meet an unlikely crew of sixteen. Pick a favourite and let physics settle it.</p>
-        <div class="hero-actions"><button class="button primary" id="btn-play">Let’s race <span aria-hidden="true">↗</span></button><button class="text-button" id="btn-how">How it works <span aria-hidden="true">→</span></button></div>
+        <div class="hero-actions"><button class="button primary" id="btn-quick">Quick race <span aria-hidden="true">↗</span></button><button class="button subtle" id="btn-play">Make it yours</button></div>
+        <div class="hero-shortcut"><span>Your saved setup. Straight to the start.</span><button class="text-button" id="btn-how">How to play <span aria-hidden="true">→</span></button></div>
         <div class="hero-numbers"><div><strong>16</strong><span>original characters</span></div><div><strong>10</strong><span>arena layouts</span></div><div><strong>2–8</strong><span>on the grid</span></div></div>
       </div>
       <div class="hero-visual" aria-hidden="true">
@@ -55,10 +58,12 @@
         <button class="discovery-card" data-enter-mode="race"><span class="discovery-icon">↳</span><span><small>FIND YOUR WAY</small><strong>Maze Race</strong><span>Sharp corners. Unexpected comebacks.</span></span><b aria-hidden="true">↗</b></button>
         <button class="discovery-card drop-discovery" data-enter-mode="drop"><span class="discovery-icon">⋮</span><span><small>LET GRAVITY DECIDE</small><strong>Marble Drop</strong><span>Pegs, spinners, and a race to the bottom.</span></span><b aria-hidden="true">↗</b></button>
       </div>
+      <section class="recent-races" id="recent-races" hidden aria-labelledby="recent-title"><div class="recent-heading"><div><p class="eyebrow">THE LAST FEW FINISHES</p><h2 id="recent-title">Recent races</h2></div><span class="tiny-label">SAVED ON THIS DEVICE</span></div><ol id="recent-list" class="recent-list"></ol></section>
     </section>
 
     <section class="screen" data-screen="mode" id="screen-mode" aria-labelledby="setup-title">
       <div class="section-heading"><div><p class="eyebrow">THE RACE IS YOURS</p><h1 id="setup-title" tabindex="-1">Set the stage.</h1><p>Pick a racer to root for. We’ll fill the rest of the grid.</p></div><button class="button subtle" id="btn-random">Shuffle setup <span aria-hidden="true">⤨</span></button></div>
+      <div class="format-row"><div><span class="tiny-label">HOW WILL YOU RACE?</span><p>One finish, or a three-round rivalry.</p></div><div class="format-switch" role="group" aria-label="Race format"><button data-format="single" class="on" aria-pressed="true"><strong>Single race</strong><span>One race. One winner.</span></button><button data-format="cup" aria-pressed="false"><strong>3-round Cup <span aria-hidden="true">✦</span></strong><span>Podium points: 5 · 3 · 1</span></button></div></div>
       <div class="setup-layout">
         <section class="panel roster-panel" aria-labelledby="roster-title">
           <div class="panel-heading"><h2 id="roster-title"><span>01</span> Find your favourite</h2><span class="tiny-label">THE WHOLE CREW</span></div>
@@ -79,21 +84,23 @@
 
     <section class="screen" data-screen="race" id="screen-race" aria-labelledby="live-title">
       <div class="race-heading"><button class="text-button" data-nav="mode">← Setup</button><div><span class="tiny-label" id="live-mode">MAZE RACE</span><h1 id="live-title">Classic</h1></div><div class="race-clock"><span class="live-dot"></span><span id="race-clock">00.0</span><small>s</small></div></div>
+      <section id="cup-strip" class="cup-strip" hidden aria-label="Cup progress"><div class="cup-heading"><span class="cup-symbol" aria-hidden="true">✦</span><strong id="cup-round-label">ROUND 1 OF 3</strong><div id="cup-track" class="cup-track"></div></div><div id="cup-scores" class="cup-scores" aria-label="Cup points"></div></section>
       <div class="live-layout">
         <div class="track-panel">
           <div class="track-topline"><span id="race-status" role="status">Taking our places…</span><span id="race-seed">RACE #—</span></div>
+          <div class="race-focus"><p id="race-event" class="race-event" aria-live="polite" aria-atomic="true">A new rivalry starts here.</p><div class="your-progress"><label id="your-progress-label" for="your-progress">Your racer · 0%</label><progress id="your-progress" max="100" value="0" aria-labelledby="your-progress-label">0%</progress></div></div>
           <div id="race-stage">
             <canvas id="race-canvas" aria-label="Live race. Racer positions are also shown in the standings."></canvas>
             <div id="countdown" class="countdown" hidden aria-live="polite"><span id="countdown-number">3</span><small>PICKED YOUR WINNER?</small></div>
             <div id="pause-overlay" class="pause-overlay" hidden><div><span class="pause-symbol">Ⅱ</span><h2>Take a breather.</h2><p>Your race is right where you left it.</p><button class="button primary" id="btn-resume">Resume race →</button></div></div>
             <div class="winner-overlay" id="winner-overlay" hidden role="region" aria-labelledby="winner-name" aria-describedby="winner-sub" tabindex="-1">
-              <div class="winner-card"><p class="eyebrow" id="result-eyebrow">THE FINISH IS IN</p><canvas id="winner-swatch" width="120" height="120"></canvas><h2 id="winner-name">—</h2><p id="winner-identity" class="winner-identity"></p><p id="winner-sub"></p><div class="result-details"><span id="result-time"></span><span id="result-pick"></span></div><button class="button primary" id="btn-again">New race ↗</button><div class="result-actions"><button class="text-button" id="btn-replay">Replay this race</button><button class="text-button" id="btn-newracer">Change setup</button></div></div>
+              <div class="winner-card"><p class="eyebrow" id="result-eyebrow">THE FINISH IS IN</p><canvas id="winner-swatch" width="120" height="120"></canvas><h2 id="winner-name">—</h2><p id="winner-identity" class="winner-identity"></p><p id="winner-sub"></p><p id="result-context" class="result-context"></p><div id="result-score" class="result-score" hidden aria-label="Cup standings"></div><div class="result-details"><span id="result-time"></span><span id="result-pick"></span></div><button class="button primary" id="btn-again">New race ↗</button><div class="result-actions"><button class="text-button" id="btn-replay">Replay this race</button><button class="text-button" id="btn-newracer">Change setup</button><button class="text-button" id="btn-share">Share this race <span aria-hidden="true">↗</span></button></div><p id="share-status" class="share-status" role="status"></p><input id="share-link" class="share-link" type="text" readonly hidden aria-label="Race replay link"></div>
             </div>
           </div>
-          <div class="track-controls"><button class="control-button" id="btn-pause" aria-label="Pause race">Ⅱ <span>Pause</span></button><div class="camera-controls" role="group" aria-label="Camera follows"><span>CAMERA</span><button id="camera-leader" class="on" aria-pressed="true">Leader</button><button id="camera-you" aria-pressed="false">My racer</button></div><button class="control-button" id="btn-restart" aria-label="Restart this race">↻ <span>Restart</span></button></div>
+          <div class="track-controls"><button class="control-button" id="btn-pause" aria-label="Pause race">Ⅱ <span>Pause</span></button><div class="camera-controls" role="group" aria-label="Camera follows"><span>CAMERA</span><button id="camera-leader" class="on" aria-pressed="true">Leader</button><button id="camera-you" aria-pressed="false">My racer</button></div><div class="speed-controls" role="group" aria-label="Playback speed"><span>SPEED</span><button data-speed=".5" aria-pressed="false" aria-label="Half speed">½×</button><button data-speed="1" class="on" aria-pressed="true" aria-label="Normal speed">1×</button><button data-speed="2" aria-pressed="false" aria-label="Double speed">2×</button></div><button class="control-button" id="btn-restart" aria-label="Restart this race">↻ <span>Restart</span></button></div>
         </div>
         <aside class="race-sidebar">
-          <div class="panel standings-panel"><div class="panel-heading"><h2>On the track</h2><span class="live-label">LIVE</span></div><p class="standings-note" id="standings-note">Positions estimated by distance to finish.</p><ol id="standings" class="standings"></ol><div class="finish-counter"><span id="finish-count">0</span> / <span id="finish-total">6</span> finished</div></div>
+          <div class="panel standings-panel"><div class="panel-heading"><h2>On the track</h2><span class="live-label" id="standings-status">LIVE</span></div><p class="standings-note" id="standings-note">Positions estimated by distance to finish.</p><ol id="standings" class="standings"></ol><div class="finish-counter"><span id="finish-count">0</span> / <span id="finish-total">6</span> finished</div></div>
           <div class="race-note"><span>↗</span><div><strong id="following-racer">Your racer: Sky</strong><p id="live-rule">First across the line wins. One corner can change the race.</p></div></div>
           <div class="keyboard-note"><kbd>Space</kbd> pause <span>·</span> <kbd>Esc</kbd> resume / pause</div>
         </aside>
@@ -101,7 +108,7 @@
     </section>
   </main>
   <footer class="site-footer"><span>MARBLE RACE <span class="footer-dot">/</span> MADE FOR THE CLOSE CALLS.</span><a href="https://ko-fi.com/weaponballarena" target="_blank" rel="noopener">Support the races ↗</a></footer>
-  <dialog id="help-dialog" aria-labelledby="help-title"><button class="dialog-close icon-button" id="btn-close-help" aria-label="Close instructions">×</button><p class="eyebrow">ALL YOU NEED TO KNOW</p><h2 id="help-title">Pick. Watch. Cheer.</h2><ol class="help-steps"><li><span>01</span><div><strong>Choose your favourite.</strong><p>Every racer has its own weight and personality. There’s no steering — they find their own way.</p></div></li><li><span>02</span><div><strong>Make it your race.</strong><p>Pick a maze or a gravity drop, choose an arena, and invite 2–8 racers.</p></div></li><li><span>03</span><div><strong>Watch it unfold.</strong><p>First across the finish wins. Follow the leader or your racer, pause any time, and replay the exact race.</p></div></li></ol><p class="help-footnote">If time runs out, the furthest-progress racer leads. Race results come from the simulation; picking a character doesn’t give them an advantage.</p><button class="button primary" id="btn-help-play">Got it. Let’s race ↗</button></dialog>
+  <dialog id="help-dialog" aria-labelledby="help-title"><button class="dialog-close icon-button" id="btn-close-help" aria-label="Close instructions">×</button><p class="eyebrow">ALL YOU NEED TO KNOW</p><h2 id="help-title">Pick. Watch. Cheer.</h2><ol class="help-steps"><li><span>01</span><div><strong>Choose your favourite.</strong><p>Every racer has its own weight and personality. There’s no steering — they find their own way. Quick race launches your saved setup.</p></div></li><li><span>02</span><div><strong>Make it your race.</strong><p>Pick an arena and invite 2–8 racers. Play one race, or a three-round Cup with the same crew. The podium earns 5, 3, and 1 points; the highest total wins.</p></div></li><li><span>03</span><div><strong>Watch it unfold.</strong><p>Follow the leader or your racer. Pause, change playback speed, or share a link to replay the same race. Speed changes how fast you watch, not the result.</p></div></li></ol><p class="help-footnote">If time runs out, the furthest-progress racer leads. Cup points go only to racers who cross the finish. Picking a character doesn’t give them an advantage.</p><button class="button primary" id="btn-help-play">Got it. Let’s race ↗</button></dialog>
   <div class="sr-only" id="announcement" aria-live="polite"></div>
   <noscript><p class="noscript-note">Marble Race needs JavaScript to run the game.</p></noscript>
 </body>
