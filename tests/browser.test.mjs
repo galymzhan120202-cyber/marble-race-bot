@@ -94,6 +94,121 @@ async function resultControls(page){
   await page.locator('#btn-again').focus();
 }
 
+async function lifecycleEdges(browser,url,errors){
+  const context=await browser.newContext({viewport:{width:1440,height:1000},reducedMotion:'reduce'});
+  async function makePage(initialSeed){
+    const page=await context.newPage();
+    page.on('pageerror',error=>errors.push({viewport:'lifecycle',message:error.message}));
+    await page.addInitScript(seed=>{
+      const original=crypto.getRandomValues.bind(crypto);let next=seed;
+      Object.defineProperty(crypto,'getRandomValues',{configurable:true,value(array){
+        if(array instanceof Uint32Array&&array.length===1){array[0]=next++;return array;}
+        return original(array);
+      }});
+    },initialSeed);
+    await page.goto(url,{waitUntil:'networkidle'});
+    return page;
+  }
+  try{
+    const page=await makePage(5000);
+    await page.locator('#btn-play').click();await page.locator('[data-format="cup"]').click();
+    const shared={mode:'drop',arena:'orbit_run',arenaSize:'s',seed:137,roster:[15,14,13,12,11,10,9,8],youIdx:15,finishTarget:3};
+    const key=await page.evaluate(config=>GameSession.encode(config),shared);
+    const sharedUrl=url+'?race='+encodeURIComponent(key);
+    await page.goto(sharedUrl,{waitUntil:'networkidle'});
+    const adopted=await read(page);
+    assert.equal(adopted.mode,'drop');assert.equal(adopted.youIdx,15);assert.equal(adopted.fieldSize,8);
+    assert.equal(adopted.arenaSize,'s');assert.equal(adopted.dropArena,'orbit_run');assert.equal(adopted.format,'single');
+    assert.equal(adopted.finishTarget,3,'a shared Cup heat keeps its own podium target');
+    await finish(page);await page.locator('#btn-newracer').click();
+    assert.equal(await page.locator('[data-mode="drop"]').getAttribute('aria-pressed'),'true');
+    assert.equal(await page.locator('[data-racer="15"].racer-card').getAttribute('aria-pressed'),'true');
+    assert.equal(await page.locator('[data-format="single"]').getAttribute('aria-pressed'),'true');
+    assert.equal(new URL(page.url()).searchParams.has('race'),false,'leaving a shared race clears its launch URL');
+    await page.reload({waitUntil:'networkidle'});
+    assert.equal((await read(page)).screen,'menu','reload after leaving a shared race stays at home');
+
+    await page.goto(sharedUrl,{waitUntil:'networkidle'});await finish(page);
+    await page.locator('#btn-again').click();
+    const next=await read(page);
+    assert.equal(next.mode,'drop');assert.equal(next.youIdx,15);assert.equal(next.fieldSize,8);
+    assert.equal(next.arenaSize,'s');assert.equal(next.dropArena,'orbit_run');assert.equal(next.format,'single');
+    assert.equal(next.finishTarget,1,'New race uses the adopted single-race setup');
+    assert.notEqual(next.seed,137);
+    assert.equal(await page.evaluate(()=>GameSession.decode(new URL(location.href).searchParams.get('race')).seed),next.seed,'the address matches the new race');
+    await page.locator('.brand').click();
+    assert.equal(new URL(page.url()).searchParams.has('race'),false);
+
+    // History replays adopt their setup even after the player changes modes.
+    await page.locator('#btn-play').click();await page.locator('[data-mode="race"]').click();
+    await page.locator('[data-racer="6"].racer-card').click();await page.locator('[data-format="cup"]').click();
+    await page.locator('.brand').click();await page.locator('.history-race').first().click();
+    const historical=await read(page);
+    assert.equal(historical.mode,'drop');assert.equal(historical.youIdx,15);assert.equal(historical.fieldSize,8);assert.equal(historical.format,'single');
+    await finish(page);
+
+    // Clipboard permissions can settle after the user has left the result.
+    // Neither branch may put an old link/status into the next race's results.
+    for(const outcome of ['resolve','reject']){
+      await page.evaluate(()=>Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:()=>new Promise((resolve,reject)=>{window.pendingClipboard={resolve,reject};})}}));
+      await page.locator('#btn-share').click();
+      assert.ok((await page.locator('#share-link').inputValue()).includes('race='));
+      await page.locator('#btn-again').click();
+      await page.evaluate(value=>window.pendingClipboard[value](value==='reject'?new Error('Delayed denial'):undefined),outcome);
+      assert.equal(await page.locator('#share-link').inputValue(),'');
+      assert.equal(await page.locator('#share-status').textContent(),'');
+      assert.equal(await page.evaluate(()=>document.activeElement.id),'btn-pause','a settled old share request cannot steal focus');
+      await finish(page);
+      assert.equal(await page.locator('#share-link').isVisible(),false);
+      assert.equal(await page.locator('#share-status').textContent(),'');
+    }
+    await page.locator('#btn-share').click();await page.locator('#btn-newracer').click();
+    await page.evaluate(()=>window.pendingClipboard.reject(new Error('Denied after leaving results')));
+    assert.equal((await read(page)).screen,'mode');
+    assert.equal(await page.evaluate(()=>document.activeElement.id),'setup-title');
+    assert.equal(await page.locator('#share-status').textContent(),'');
+
+    // Two tabs may write settings and finish distinct races in either order.
+    // A stale setup change must not erase the other tab's results or ledger.
+    await page.evaluate(()=>localStorage.removeItem(STORAGE_KEY));await page.goto(url,{waitUntil:'networkidle'});
+    await page.locator('#btn-quick').click();await page.keyboard.press('Escape');
+    const second=await makePage(7000);await second.locator('#btn-quick').click();
+    await finish(second);
+    const secondWin=await second.evaluate(()=>state.sim.winner===state.sim.racers[state.sim.youIdx]?1:0);
+    await page.locator('[data-speed="2"]').click();
+    let stored=await page.evaluate(()=>JSON.parse(localStorage.getItem(STORAGE_KEY)));
+    assert.equal(stored.races,1);assert.equal(stored.wins,secondWin);assert.equal(stored.history.length,1);assert.equal(stored.countedRuns.length,1);
+    await finish(page);
+    const firstWin=await page.evaluate(()=>state.sim.winner===state.sim.racers[state.sim.youIdx]?1:0);
+    await second.locator('#btn-sound').click();
+    stored=await second.evaluate(()=>JSON.parse(localStorage.getItem(STORAGE_KEY)));
+    assert.equal(stored.races,2);assert.equal(stored.wins,firstWin+secondWin);assert.equal(stored.history.length,2);assert.equal(stored.countedRuns.length,2);
+    const firstConfig=await page.evaluate(()=>GameSession.validate(state.lastRun));
+    await second.evaluate(config=>startSim(false,{...config,counted:false}),firstConfig);await finish(second);
+    stored=await second.evaluate(()=>JSON.parse(localStorage.getItem(STORAGE_KEY)));
+    assert.equal(stored.races,2,'a race already counted in the other tab cannot count again');
+    assert.equal(stored.history.length,2);assert.equal(stored.countedRuns.length,2);
+
+    // Quota/private-mode failures must keep a local finish pending until a
+    // later successful write, without counting it again on every settings save.
+    await page.evaluate(()=>{
+      window.originalStorageSetItem=Storage.prototype.setItem;
+      Storage.prototype.setItem=function(){throw new DOMException('Temporary storage failure','QuotaExceededError');};
+    });
+    await page.locator('#btn-again').click();await finish(page);
+    assert.equal((await read(page)).races,3,'an unsaved finish still appears in this tab');
+    await page.locator('[data-speed="1"]').click();
+    assert.equal((await read(page)).races,3,'settings changes retain an unsaved finish');
+    stored=await page.evaluate(()=>JSON.parse(localStorage.getItem(STORAGE_KEY)));
+    assert.equal(stored.races,2,'a failed write leaves previous persisted progress intact');
+    await page.evaluate(()=>{Storage.prototype.setItem=window.originalStorageSetItem;persist();persist();});
+    stored=await page.evaluate(()=>JSON.parse(localStorage.getItem(STORAGE_KEY)));
+    assert.equal(stored.races,3);assert.equal(stored.history.length,3);assert.equal(stored.countedRuns.length,3);
+    await second.waitForFunction(()=>state.races===3);
+    console.log('PASS lifecycle edges: shared/history setup, URL lifecycle, delayed clipboard, cross-tab progress, failed storage retry');
+  }finally{await context.close();}
+}
+
 try{
   browser=await chromium.launch({headless:true,...(process.env.MARBLE_BROWSER_PATH?{executablePath:process.env.MARBLE_BROWSER_PATH}:{})});
   if(server){
@@ -414,6 +529,7 @@ try{
         }
         await page.evaluate(value=>localStorage.setItem('marble-race-v2',value),originalStorage);
         await page.reload({waitUntil:'networkidle'});
+        await lifecycleEdges(browser,url,errors);
       }
       results.push({viewport:label,status:'passed',mazeWinner:result.winner,dropWinner:dropResult.winner,stats:5});
       console.log(`PASS ${label}: quick start, identities, live controls, Cup podium, replay/share, history, timeout, persistence`);

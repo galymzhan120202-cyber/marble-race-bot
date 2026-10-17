@@ -13,6 +13,56 @@ RUNS = [sim.simulate_race, sim.simulate_battle, sim.simulate_drop]
 
 
 @pytest.mark.parametrize("run", RUNS)
+@pytest.mark.parametrize("max_seconds", [0.001, float("inf"), float("nan")])
+def test_unrenderable_duration_is_rejected_before_physics(monkeypatch, run, max_seconds):
+    def unexpected_space(*args, **kwargs):
+        pytest.fail("Invalid simulation duration reached physics setup")
+
+    monkeypatch.setattr(pymunk, "Space", unexpected_space)
+    with pytest.raises(ValueError, match="duration"):
+        run(360, 640, 17, min_seconds=0, max_seconds=max_seconds, n_racers=2)
+
+
+@pytest.mark.parametrize("run", RUNS)
+@pytest.mark.parametrize("fps", [1, 24, 60, 120])
+def test_decisive_finish_stops_before_a_later_physics_step(monkeypatch, run, fps):
+    original = pymunk.Space.step
+    steps = 0
+
+    def successive_finishes(space, dt):
+        nonlocal steps
+        steps += 1
+        if steps in (7, 8):
+            sensor = next(s for s in space.shapes if s.collision_type == sim.FINISH_TYPE)
+            racer = next(s for s in space.shapes
+                         if s.collision_type == sim.RACER_TYPE_BASE + steps - 7)
+            racer.body.position = sensor.body.local_to_world((sensor.a + sensor.b) / 2)
+            racer.body.velocity = (0, 0)
+            racer.body.force = (0, 0)
+            space.reindex_shapes_for_body(racer.body)
+        return original(space, dt)
+
+    monkeypatch.setattr(pymunk.Space, "step", successive_finishes)
+    race = run(360, 640, 17, n_racers=2, fps=fps, min_seconds=0, max_seconds=1)
+    assert steps == 7
+    assert race["frames"][race["finale_start"] - 1]["step"] == 7
+    assert race["finish_order"] == [0]
+    assert race["frames"][-1]["active"] == [False, True]
+    assert [event[0] for events in race["finish_frame_flags"].values()
+            for event in events] == [0]
+
+
+@pytest.mark.parametrize("run", RUNS)
+def test_real_terminal_state_is_identical_across_video_frame_rates(run):
+    races = [run(360, 640, 17, n_racers=4, fps=fps) for fps in (1, 24, 60, 120)]
+    expected = races[0]
+    for race in races[1:]:
+        for key in ("winner_idx", "result_reason", "finish_order", "full_ranking"):
+            assert race[key] == expected[key]
+        assert race["frames"][-1] == expected["frames"][-1]
+
+
+@pytest.mark.parametrize("run", RUNS)
 @pytest.mark.parametrize("max_steps", [1, 7, 12])
 def test_partial_last_frame_records_the_final_physics_step(run, max_steps):
     race = run(360, 640, 17, n_racers=2, fps=24,

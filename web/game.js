@@ -2,14 +2,11 @@
 
 const $ = id => document.getElementById(id);
 const STORAGE_KEY = "marble-race-v2";
-function readSaved() {
+function readSaved(fallback={}) {
   try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}") || {}; }
-  catch { return {}; }
+  catch { return fallback; }
 }
 const saved = readSaved();
-const savedHistory = GameSession.history(saved.history);
-const savedRaces = Number.isSafeInteger(saved.races) && saved.races >= 0 ? saved.races : 0;
-const savedWins = Number.isSafeInteger(saved.wins) && saved.wins >= 0 ? Math.min(saved.wins,savedRaces) : 0;
 const validArena = (list, value, fallback) => list.some(a => a.id === value) ? value : fallback;
 const state = {
   screen:"menu", youIdx:Number.isInteger(saved.youIdx) && saved.youIdx >= 0 && saved.youIdx < RACER_POOL.length ? saved.youIdx : 6,
@@ -21,9 +18,7 @@ const state = {
   sound:saved.sound === true, followYou:false,
   format:saved.format === "cup" ? "cup" : "single",
   speed:[.5,1,2].includes(saved.speed) ? saved.speed : 1,
-  history:savedHistory, cup:null,
-  countedRuns:Array.isArray(saved.countedRuns)?saved.countedRuns.filter(key=>GameSession.decode(key)).slice(-200):savedHistory.map(r=>r.race),
-  races:savedRaces, wins:savedWins,
+  ...GameSession.progress(saved), cup:null,
   sim:null, raf:null, lastTime:0, accumulator:0, phase:"idle", paused:false,
   countdownRemaining:0, countdownTick:null, lastRun:null, standingsAt:-1, runId:0,
 };
@@ -31,9 +26,25 @@ const SIM_KINDS = {
   race:{step:stepRace,draw:drawRace,size:s=>[s.geo.w,s.viewportH || s.geo.imgH]},
   drop:{step:stepDrop,draw:drawDrop,size:s=>[s.stageW,s.viewportH]},
 };
-function persist() {
+let storedProgress=GameSession.progress(saved);
+const pendingResults=new Map();
+function refreshProgress(){
+  storedProgress=GameSession.progress(readSaved(storedProgress));
+  let latest=storedProgress;
+  for(const result of pendingResults.values())latest=GameSession.progress(latest,result);
+  Object.assign(state,latest);
+}
+function persist(result=null) {
+  // A tab may have finished another race since this screen was opened.
+  // Merge against storage at write time so settings cannot erase its result.
+  if(result)pendingResults.set(result.race,result);
+  refreshProgress();
   const {youIdx,fieldSize,mode,arenaSize,mazeArena,dropArena,sound,races,wins,format,speed,history,countedRuns} = state;
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify({youIdx,fieldSize,mode,arenaSize,mazeArena,dropArena,sound,races,wins,format,speed,history,countedRuns})); } catch {}
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({youIdx,fieldSize,mode,arenaSize,mazeArena,dropArena,sound,races,wins,format,speed,history,countedRuns}));
+    storedProgress=GameSession.progress(state);pendingResults.clear();
+  } catch {}
+  updateSession();
 }
 function announce(message) { $("announcement").textContent = message; }
 function arenaInfo(mode = state.mode, id = mode === "race" ? state.mazeArena : state.dropArena) {
@@ -79,7 +90,7 @@ function stopSimulation() {
 }
 function showScreen(name) {
   if (!["menu","mode","race"].includes(name)) return;
-  if (name !== "race") stopSimulation();
+  if (name !== "race") {stopSimulation();updateRaceUrl();}
   state.screen = name;
   document.body.dataset.screen = name;
   document.querySelectorAll(".screen").forEach(el => {
@@ -202,6 +213,21 @@ function newRun() {
   const roster=shuffle([state.youIdx,...shuffle(RACER_POOL.map((_,i)=>i).filter(i=>i!==state.youIdx),rng).slice(0,state.fieldSize-1)],rng);
   return {seed,roster,youIdx:state.youIdx,mode:state.mode,arenaSize:state.arenaSize,arena:state.mode==="race"?state.mazeArena:state.dropArena,finishTarget:1,counted:false};
 }
+function updateRaceUrl(config=null){
+  try{
+    const url=new URL(location.href);
+    if(!url.searchParams.has("race"))return;
+    if(config)url.searchParams.set("race",GameSession.encode(config));
+    else url.searchParams.delete("race");
+    window.history.replaceState(null,"",url.href);
+  }catch{}
+}
+function openExternalRace(config){
+  state.cup=null;
+  Object.assign(state,{youIdx:config.youIdx,fieldSize:config.roster.length,mode:config.mode,arenaSize:config.arenaSize,format:"single"});
+  if(config.mode==="race")state.mazeArena=config.arena;else state.dropArena=config.arena;
+  startSim(false,config);
+}
 function startSelected(){
   if(state.format==="cup"){
     state.cup=GameSession.makeCup(newRun());startCupRound(0);
@@ -241,7 +267,7 @@ function renderHistory(){
     const text=document.createElement("span"),title=document.createElement("strong"),detail=document.createElement("small");
     title.textContent=racer.name+" won · "+entry.seconds.toFixed(2)+"s";
     detail.textContent=arenaInfo(config.mode,config.arena).name+" · Replay";text.append(title,detail);button.append(img,text);
-    button.addEventListener("click",()=>{state.cup=null;startSim(false,{...config,counted:true});});
+    button.addEventListener("click",()=>openExternalRace({...config,counted:true}));
     const item=document.createElement("li");item.append(button);$("recent-list").append(item);
   }
 }
@@ -250,6 +276,7 @@ function startSim(replay=false, override=null) {
   const config=override || (replay&&state.lastRun?{...state.lastRun,roster:[...state.lastRun.roster]}:newRun());
   stopSimulation();showScreen("race");
   state.lastRun=config;
+  updateRaceUrl(config);
   const roster=config.roster.map(i=>({...RACER_POOL[i]}));
   const sim=config.mode==="drop"?buildDrop(config.seed,roster,config.arena):buildRace(config.seed,roster,config.arenaSize,config.arena);
   sim.youIdx=config.roster.indexOf(config.youIdx);sim.kind=config.mode;sim.followYou=state.followYou;
@@ -270,7 +297,7 @@ function startSim(replay=false, override=null) {
   $("finish-total").textContent=roster.length;$("race-status").textContent=replay?"Same grid. Same race.":"Taking our places…";
   $("countdown").hidden=false;$("countdown-number").textContent="3";
   $("btn-pause").disabled=false;$("btn-restart").disabled=false;
-  $("share-status").textContent="";$("share-link").hidden=true;$("race-event").textContent="Your crew is ready.";
+  $("share-status").textContent="";$("share-link").hidden=true;$("share-link").value="";$("race-event").textContent="Your crew is ready.";
   $("standings-status").textContent="LIVE";
   renderCup();setSpeed(state.speed);
   updatePauseControl();buildStandings();updateStandings(true);fitCanvas();
@@ -442,11 +469,9 @@ function showWinner(sim){
   if(!sim.recorded){
     sim.recorded=true;
     const key=GameSession.encode(sim.runConfig);
-    if(!timeout && !sim.runConfig.counted && !state.countedRuns.includes(key)){
-      sim.runConfig.counted=true;state.races++;if(won)state.wins++;
-      state.countedRuns=[...state.countedRuns,key].slice(-200);
-      state.history=GameSession.history([{race:key,winner:sim.runConfig.roster[sim.racers.indexOf(winner)],seconds:finishSeconds,at:Date.now()},...state.history]);
-      persist();updateSession();
+    if(!timeout && !sim.runConfig.counted){
+      sim.runConfig.counted=true;
+      persist({race:key,winner:sim.runConfig.roster[sim.racers.indexOf(winner)],seconds:finishSeconds,at:Date.now(),won});
     }
     if(!timeout){tone(523,.14);tone(659,.14,.12);tone(784,.3,.24);}
   }
@@ -469,11 +494,13 @@ function frameCamera(){
 }
 async function shareRace(){
   const key=GameSession.encode(state.lastRun);if(!key)return;
+  const runId=state.runId;
+  const stillCurrent=()=>state.runId===runId&&state.screen==="race"&&state.phase==="finished";
   const url=new URL(location.href);url.search="";url.hash="";url.searchParams.set("race",key);
   const link=url.href;
   $("share-link").value=link;
-  try{await navigator.clipboard.writeText(link);$("share-status").textContent="Race link copied. Same seed, same grid.";}
-  catch{$("share-link").hidden=false;$("share-link").focus();$("share-link").select();$("share-status").textContent="Copy this link to replay the same race.";}
+  try{await navigator.clipboard.writeText(link);if(stillCurrent())$("share-status").textContent="Race link copied. Same seed, same grid.";}
+  catch{if(stillCurrent()){$("share-link").hidden=false;$("share-link").focus();$("share-link").select();$("share-status").textContent="Copy this link to replay the same race.";}}
 }
 document.querySelectorAll("[data-nav]").forEach(el=>el.addEventListener("click",()=>showScreen(el.dataset.nav)));
 $("btn-play").addEventListener("click",()=>showScreen("mode"));
@@ -516,6 +543,11 @@ document.addEventListener("keydown",event=>{
   }
 });
 document.addEventListener("visibilitychange",()=>{if(document.hidden)pauseRace();});
+window.addEventListener("storage",event=>{
+  if(event.key!==null&&event.key!==STORAGE_KEY)return;
+  refreshProgress();updateSession();
+  if(state.screen==="menu")renderHistory();
+});
 window.addEventListener("resize",fitCanvas,{passive:true});
 for(const racer of RACER_POOL){
   const portrait=new Image();racerPortraits.set(racer.name,portrait);
@@ -526,7 +558,7 @@ buildRacerGrid();buildArenaCards();updateSetup();updateSession();updateSoundButt
 const sharedValue=new URLSearchParams(location.search).get("race");
 if(sharedValue){
   const shared=GameSession.decode(sharedValue);
-  if(shared){state.cup=null;startSim(false,shared);announce("Shared race loaded. Same seed and starting grid.");}
+  if(shared){openExternalRace(shared);announce("Shared race loaded. Same seed and starting grid.");}
   else {
     const message="This race link is invalid or from an older version. Choose a new race.";
     $("link-notice").textContent=message;$("link-notice").hidden=false;announce(message);

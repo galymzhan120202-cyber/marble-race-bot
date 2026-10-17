@@ -881,7 +881,9 @@ def _corridor_waypoint(geo, cell, position, target, space):
 def _validate_simulation(w, h, fps, max_seconds, min_seconds, n_racers, forced_racers):
     if not isinstance(fps, int) or fps <= 0 or PHYSICS_HZ % fps:
         raise ValueError("fps must be a positive divisor of 120 (e.g. 24, 30 or 60)")
-    if w <= 0 or h <= 0 or not 0 <= min_seconds <= max_seconds or max_seconds <= 0:
+    if (not all(math.isfinite(value) for value in (w, h, max_seconds, min_seconds))
+            or w <= 0 or h <= 0 or not 0 <= min_seconds <= max_seconds
+            or max_seconds * PHYSICS_HZ < 1):
         raise ValueError("Invalid video dimensions or simulation duration")
     count = len(forced_racers) if forced_racers is not None else n_racers
     if count is not None and (not isinstance(count, int) or not 2 <= count <= len(RACER_POOL)):
@@ -1381,7 +1383,12 @@ def simulate_race(w, h, seed, fps=24, max_seconds=28, min_seconds=13, n_racers=N
                     recovery_until[i] = 0
                     progress_stall[i] = 0
 
-        if step_counter["n"] % steps_per_frame == 0 or step_counter["n"] == max_steps:
+        # A result belongs to its physics step, not the next video frame.
+        # Otherwise a lower rendering FPS lets extra racers finish or move
+        # after the result is decided, changing the final ranking/state.
+        decisive = not any(active) or len(finish_log) >= required_finishers
+        if (step_counter["n"] % steps_per_frame == 0
+                or step_counter["n"] == max_steps or decisive):
             pos = []
             for i in range(n_racers):
                 if active[i]:
@@ -1412,7 +1419,7 @@ def simulate_race(w, h, seed, fps=24, max_seconds=28, min_seconds=13, n_racers=N
                 bump_frame_flags[frame_idx - 1] = (best[1], best[2], best[3], best[4])
 
             last_frame_step = step_counter["n"]
-            if not any(active) or len(finish_log) >= required_finishers:
+            if decisive:
                 break
 
     def _progress(i):
@@ -2001,7 +2008,9 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=32, min_seconds=14, n_racers
                     recovery_until[i] = 0
                     progress_stall[i] = 0
 
-        if step_counter["n"] % steps_per_frame == 0 or step_counter["n"] == max_steps:
+        decisive = bool(finish_log) or sum(active) <= 1
+        if (step_counter["n"] % steps_per_frame == 0
+                or step_counter["n"] == max_steps or decisive):
             pos = []
             for i in range(n_racers):
                 if active[i]:
@@ -2033,7 +2042,7 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=32, min_seconds=14, n_racers
                 bump_frame_flags[frame_idx - 1] = (best[1], best[2], best[3], best[4])
 
             last_frame_step = step_counter["n"]
-            if finish_log or sum(active) <= 1:
+            if decisive:
                 break
 
     def _progress(i):
@@ -2474,7 +2483,9 @@ def simulate_drop(w, h, seed, fps=24, max_seconds=22, min_seconds=8, n_racers=No
                                 finish_shape.bb.bottom)
         _remove_inactive(space, bodies, shapes, active)
 
-        if step_counter["n"] % steps_per_frame == 0 or step_counter["n"] == max_steps:
+        decisive = not any(active) or bool(finish_log)
+        if (step_counter["n"] % steps_per_frame == 0
+                or step_counter["n"] == max_steps or decisive):
             pos = []
             for i in range(n_racers):
                 if active[i]:
@@ -2497,7 +2508,7 @@ def simulate_drop(w, h, seed, fps=24, max_seconds=22, min_seconds=8, n_racers=No
                 bump_frame_flags[frame_idx - 1] = (best[1], best[2], best[3], best[4])
 
             last_frame_step = step_counter["n"]
-            if not any(active) or finish_log:
+            if decisive:
                 break
 
     if winner_idx_box[0] is not None:

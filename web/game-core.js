@@ -402,7 +402,13 @@ function wallBlocks(race, from, to, radius=0){
 function updateRaceCamera(sim, focusY, worldH){
   const maxY=Math.max(0,worldH-sim.viewportH);
   const target=Math.max(0,Math.min(maxY,focusY-sim.viewportH*.42));
-  sim.cameraY=Math.max(0,Math.min(maxY,sim.complete ? target : sim.cameraY+(target-sim.cameraY)*.045));
+  const smoothed=sim.complete ? target : sim.cameraY+(target-sim.cameraY)*.045;
+  // Fast drops can outrun smoothing in a short landscape viewport. Keep
+  // the followed sprite inside the frame while retaining smooth tracking.
+  const radius=sim.geo?.racerRadius??sim.racerRadius??0;
+  const margin=Math.min(sim.viewportH/2,Math.max(sim.viewportH*.12,radius*1.4));
+  const framed=Math.max(focusY-sim.viewportH+margin,Math.min(focusY-margin,smoothed));
+  sim.cameraY=Math.max(0,Math.min(maxY,framed));
 }
 
 function recordFinishCrossings(sim, active, previousY, radius, lineY){

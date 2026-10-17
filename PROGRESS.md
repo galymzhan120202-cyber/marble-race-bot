@@ -4,6 +4,31 @@ Latest update: 2026-10-18. Update this file whenever a setup step changes —
 session/machine switches have already lost unsaved browser work once, this
 file is the durable record.
 
+## Follow-up bug audit (2026-10-18)
+
+- Shared links and history replays now adopt the opened race's mode, arena,
+  selected racer and field size. New race keeps that setup. Navigation clears
+  the consumed launch URL, while starting another race updates its URL.
+- Clipboard results are scoped to the race that requested them. A delayed
+  permission response cannot show an old link or steal the next screen's focus.
+- Saving settings reads current stored progress before writing, preventing an
+  older tab from erasing a newer tab's results. Storage events refresh counters
+  and history; failed writes retain pending results for a later retry.
+- Fast Drop racers could outrun the camera in short viewports for 0.74 seconds.
+  Camera smoothing now keeps its target visible without changing the physics
+  or existing race-link version. All 90 camera audit cases keep the target in
+  frame; 600 additional Maze cases cover all three sizes and edge seeds.
+- Python simulations now stop and capture the decisive physics step instead
+  of waiting for a video-frame boundary. This prevents FPS-dependent extra
+  finishes and terminal movement. Nonfinite durations and durations shorter
+  than one physics step are rejected before producing an empty recording.
+- Validation: 703 Python tests and 23 Node tests passed. All four video modes
+  encoded and decoded offline with finite, audible, unclipped audio. New
+  regressions cover FPS-independent terminal states, camera visibility,
+  cross-tab progress, share/navigation lifecycle and failed storage retries.
+  Browser scenarios passed at 1440x1000, 390x844, 360x640 and 844x390 with no
+  page errors, including the new lifecycle and transient-storage cases.
+
 ## Cup play, race links and finish accuracy (2026-10-18)
 
 - Added Quick play, a three-round Cup across distinct arenas, recent-result

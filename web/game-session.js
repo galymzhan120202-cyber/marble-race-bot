@@ -63,7 +63,22 @@ const GameSession = (() => {
           entry.seconds<=0 || entry.seconds>120 || !Number.isFinite(entry.at) || seen.has(entry.race)) return [];
       seen.add(entry.race);
       return [{race:entry.race,winner:entry.winner,seconds:entry.seconds,at:entry.at}];
-    }).slice(0,20);
+    }).sort((a,b)=>b.at-a.at).slice(0,20);
   }
-  return Object.freeze({VERSION,validate,encode,decode,makeCup,scoreRound,cupLeaders,history});
+  function progress(input, result=null) {
+    const recent=history(input?.history);
+    const races=Number.isSafeInteger(input?.races)&&input.races>=0?input.races:0;
+    const wins=Number.isSafeInteger(input?.wins)&&input.wins>=0?Math.min(input.wins,races):0;
+    const keys=Array.isArray(input?.countedRuns)?input.countedRuns.filter(key=>decode(key)):[];
+    const next={races,wins,history:recent,countedRuns:[...new Set([...keys,...recent.slice().reverse().map(entry=>entry.race)])].slice(-200)};
+    const entry=result&&typeof result.won==="boolean"?history([result])[0]:null;
+    if(entry&&!next.countedRuns.includes(entry.race)){
+      next.races=Math.min(Number.MAX_SAFE_INTEGER,next.races+1);
+      next.wins=Math.min(next.races,next.wins+(result.won?1:0));
+      next.countedRuns=[...next.countedRuns,entry.race].slice(-200);
+      next.history=history([entry,...next.history]);
+    }
+    return next;
+  }
+  return Object.freeze({VERSION,validate,encode,decode,makeCup,scoreRound,cupLeaders,history,progress});
 })();

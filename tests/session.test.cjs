@@ -47,3 +47,27 @@ test('history filters invalid results, duplicate links and excessive payloads',(
   const many=Array.from({length:25},(_,i)=>({...record,race:session.encode({...config,seed:i})}));
   assert.equal(session.history(many).length,20);
 });
+
+test('progress records a finish once against the latest stored results',()=>{
+  const first={race:session.encode(config),winner:6,seconds:7.2,at:100,won:true};
+  const second={...first,race:session.encode({...config,seed:42}),winner:1,at:200,won:false};
+  const latest=session.progress({},first);
+  assert.equal(latest.races,1);assert.equal(latest.wins,1);
+  assert.deepEqual(session.progress(latest,first),latest,'another tab replaying the same race cannot count it twice');
+  const combined=session.progress(latest,second);
+  assert.equal(combined.races,2);assert.equal(combined.wins,1);
+  assert.deepEqual(combined.history.map(entry=>entry.race),[second.race,first.race]);
+  assert.deepEqual(session.progress(combined),combined,'saving settings preserves both results');
+  assert.deepEqual(session.progress(combined,{...first,race:'broken'}),combined);
+  const retried=session.progress(session.progress({},second),first);
+  assert.equal(retried.races,2);assert.equal(retried.wins,1);
+  assert.deepEqual(retried.history.map(entry=>entry.at),[200,100],'retrying an older unsaved finish preserves chronological history');
+});
+
+test('progress sanitizes saved counts and retains history replay protection',()=>{
+  const race=session.encode(config),entry={race,winner:6,seconds:7.2,at:100};
+  const restored=session.progress({races:2,wins:99,history:[entry],countedRuns:[]});
+  assert.equal(restored.wins,2);assert.deepEqual(restored.countedRuns,[race]);
+  assert.equal(session.progress(restored,{...entry,won:true}).races,2);
+  assert.deepEqual(session.progress({races:Infinity,wins:4}),{races:0,wins:0,history:[],countedRuns:[]});
+});

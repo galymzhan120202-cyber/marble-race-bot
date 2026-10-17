@@ -227,3 +227,37 @@ test('selected racer indicator follows the live viewport and is absent when visi
     }
   }
 });
+
+test('short viewports keep the followed racer visible without changing seeded finishes',()=>{
+  for(const {id} of api.DROP_ARENAS) for(const seed of [0,7,0xffffffff]) for(const followYou of [false,true]){
+    const short=api.buildDrop(seed,roster(8),id),normal=api.buildDrop(seed,roster(8),id);
+    short.viewportH=360;short.followYou=followYou;short.youIdx=7;
+    short.finishTarget=3;normal.finishTarget=3;
+    while(!short.complete&&short.step<api.PHYSICS_HZ*60){
+      api.stepDrop(short,short.step/api.PHYSICS_HZ);
+      api.stepDrop(normal,normal.step/api.PHYSICS_HZ);
+      const active=short.racers.filter(r=>r.active);
+      const followed=short.complete?short.winner:followYou&&short.racers[7].active?short.racers[7]:active.reduce((best,r)=>r.y>best.y?r:best);
+      assert.ok(followed.y-short.racerRadius>=short.cameraY,`${id}/${seed}: followed racer left the top`);
+      assert.ok(followed.y+short.racerRadius<=short.cameraY+short.viewportH,`${id}/${seed}: followed racer fell below the viewport`);
+      assert.ok(short.cameraY>=0&&short.cameraY<=short.worldH-short.viewportH);
+    }
+    assert.equal(short.complete,true);
+    assert.deepEqual(short.finishOrder,normal.finishOrder);
+    assert.deepEqual(short.racers.map(r=>[r.x,r.y,r.vx,r.vy,r.angle,r.finishStep]),normal.racers.map(r=>[r.x,r.y,r.vx,r.vy,r.angle,r.finishStep]));
+  }
+});
+
+test('all maze sizes keep camera targets framed across edge seeds and leader changes',()=>{
+  for(const {id} of api.MAZE_ARENAS) for(const size of ['s','m','l']) for(const seed of [0x80000000,0xffffffff]){
+    const sim=api.buildRace(seed,roster(8),size,id);sim.viewportH=360;sim.finishTarget=3;
+    while(!sim.complete&&sim.step<api.PHYSICS_HZ*90){
+      api.stepRace(sim,sim.step/api.PHYSICS_HZ);
+      const active=sim.racers.filter(r=>r.active);
+      const followed=sim.complete?sim.winner:active.reduce((best,r)=>sim.distField[r.lastCell[0]][r.lastCell[1]]<sim.distField[best.lastCell[0]][best.lastCell[1]]?r:best);
+      assert.ok(followed.y-sim.geo.racerRadius>=sim.cameraY,`${id}/${size}/${seed}: target above frame`);
+      assert.ok(followed.y+sim.geo.racerRadius<=sim.cameraY+sim.viewportH,`${id}/${size}/${seed}: target below frame`);
+    }
+    assert.equal(sim.complete,true);
+  }
+});
