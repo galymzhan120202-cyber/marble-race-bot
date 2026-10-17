@@ -1,0 +1,98 @@
+{
+  "Blacky": {
+    "name": "Blacky",
+    "kind": "cat",
+    "label": "Midnight cat",
+    "description": "A moonlit mischief-maker with velvet ears."
+  },
+  "Sunny": {
+    "name": "Sunny",
+    "kind": "banana",
+    "label": "Banana",
+    "description": "A sunny little curve with a very big grin."
+  },
+  "Cocoa": {
+    "name": "Cocoa",
+    "kind": "boba",
+    "label": "Boba",
+    "description": "Milk tea, chewy pearls and unshakeable composure."
+  },
+  "Pine": {
+    "name": "Pine",
+    "kind": "matcha",
+    "label": "Matcha",
+    "description": "A tiny cup of green calm in a noisy race."
+  },
+  "Tango": {
+    "name": "Tango",
+    "kind": "fox",
+    "label": "Fox",
+    "description": "Pointy ears, bright cheeks and a curious streak."
+  },
+  "Ghost": {
+    "name": "Ghost",
+    "kind": "ghost",
+    "label": "Mochi ghost",
+    "description": "A soft little spirit with a surprised smile."
+  },
+  "Sky": {
+    "name": "Sky",
+    "kind": "cloud",
+    "label": "Cloud",
+    "description": "A pocket-sized cloud with a silver-blue lining."
+  },
+  "Rosy": {
+    "name": "Rosy",
+    "kind": "donut",
+    "label": "Donut",
+    "description": "Strawberry icing and a confetti kind of mood."
+  },
+  "Cherry": {
+    "name": "Cherry",
+    "kind": "cherries",
+    "label": "Cherry duo",
+    "description": "Two cherries, one stem and twice the attitude."
+  },
+  "Minty": {
+    "name": "Minty",
+    "kind": "gummy",
+    "label": "Gummy bear",
+    "description": "A glossy mint bear with a soft-hearted grin."
+  },
+  "Grape": {
+    "name": "Grape",
+    "kind": "ufo",
+    "label": "Jelly UFO",
+    "description": "A grape jelly pilot in a tiny flying saucer."
+  },
+  "Coral": {
+    "name": "Coral",
+    "kind": "peach",
+    "label": "Peach",
+    "description": "A rosy peach with a leaf that never sits still."
+  },
+  "Lime": {
+    "name": "Lime",
+    "kind": "frog",
+    "label": "Frog",
+    "description": "Wide eyes, round toes and boundless curiosity."
+  },
+  "Slate": {
+    "name": "Slate",
+    "kind": "bot",
+    "label": "Mini bot",
+    "description": "A little metal friend with a glowing blue smile."
+  },
+  "Amber": {
+    "name": "Amber",
+    "kind": "bee",
+    "label": "Honey bee",
+    "description": "Golden stripes and a pair of sugar-glass wings."
+  },
+  "Ruby": {
+    "name": "Ruby",
+    "kind": "dragon",
+    "label": "Dragon",
+    "description": "A berry-red dragon with tiny golden horns."
+  }
+}

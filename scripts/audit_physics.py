@@ -57,7 +57,8 @@ for name, run, minimum, maximum in [
                             break
             ranking = race['full_ranking']
             results.append(dict(mode=name, seed=seed, n=n, stuck=stuck,
-                max_dwell=round(max_dwell, 2), timeout=not race['winner_finished'],
+                max_dwell=round(max_dwell, 2), result_reason=race['result_reason'],
+                timeout=race['result_reason']=='timeout',
                 no_event=not race['finish_frame_flags'] and not race.get('elim_frame_flags'),
                 invalid=invalid, bad_rank=sorted(ranking)!=list(range(n)),
                 all_inactive=not any(frames[-1]['active']),
@@ -65,9 +66,13 @@ for name, run, minimum, maximum in [
     rows = [r for r in results if r['mode']==name]
     print(name, 'runs', len(rows), 'stuck', sum(bool(r['stuck']) for r in rows),
           'dwell3', sum(r['max_dwell']>=3 for r in rows),
+          'timeouts', sum(r['timeout'] for r in rows),
+          'last_standing', sum(r['result_reason']=='last_standing' for r in rows),
           'no_event', sum(r['no_event'] for r in rows),
           'bad_rank', sum(r['bad_rank'] for r in rows), flush=True)
 Path(args.output).write_text(json.dumps(results, indent=2))
 
+# Report raw simulation timeouts separately; the publishing quality gate rejects
+# them. This physics audit fails on invalid coordinates, rankings or confinement.
 if any(r["invalid"] or r["bad_rank"] or r["stuck"] for r in results):
     raise SystemExit(1)

@@ -404,7 +404,7 @@ def generate_tournament_video(skip_upload: bool = False):
 
         music_clip = None
         try:
-            music_path, music_attribution = pick_background_music(duration)
+            music_path, music_attribution = pick_background_music(duration, allow_network=not skip_upload)
         except Exception as e:
             logger.warning(f"⚠️ Музыка таңдау қатесі: {e}")
             music_path, music_attribution = None, None

@@ -1,0 +1,32 @@
+[
+  {
+    "file": "grid_glide.wav",
+    "title": "Grid Glide",
+    "creator": "Marble Race",
+    "license": "original",
+    "source": "scripts/generate_fallback_music.py",
+    "description": "Original procedural composition; no external samples or recordings.",
+    "bpm": 120,
+    "duration_seconds": 16.0
+  },
+  {
+    "file": "soft_sparks.wav",
+    "title": "Soft Sparks",
+    "creator": "Marble Race",
+    "license": "original",
+    "source": "scripts/generate_fallback_music.py",
+    "description": "Original procedural composition; no external samples or recordings.",
+    "bpm": 128,
+    "duration_seconds": 15.0
+  },
+  {
+    "file": "sunny_circuit.wav",
+    "title": "Sunny Circuit",
+    "creator": "Marble Race",
+    "license": "original",
+    "source": "scripts/generate_fallback_music.py",
+    "description": "Original procedural composition; no external samples or recordings.",
+    "bpm": 112,
+    "duration_seconds": 17.143
+  }
+]

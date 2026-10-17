@@ -227,11 +227,15 @@ def get_local_music_attribution(filename):
             entries = json.load(f)
         for entry in entries:
             if entry.get("file") == filename and (entry.get("license") or "").lower() != "cc0":
-                return (
+                if (entry.get("license") or "").lower() == "original":
+                    return f'Original music: "{entry.get("title", "Untitled")}" — {entry.get("creator", "Marble Race")}.'
+                credit = (
                     f'Music: "{entry.get("title", "Untitled")}" by '
                     f'{entry.get("creator", "Unknown artist")} '
-                    f'({entry.get("license", "by").upper()}) — {entry.get("foreign_landing_url", "")}'
+                    f'({entry.get("license", "by").upper()})'
                 )
+                source = entry.get("foreign_landing_url")
+                return f'{credit} — {source}' if source else credit
     except Exception:
         return None
     return None
@@ -384,29 +388,31 @@ def upload_to_youtube(video_path, title, description, tags=None, thumbnail_path=
         raise
 
 
-def pick_background_music(duration):
+def pick_background_music(duration, *, allow_network=True):
     """Shared by the Shorts pipeline and the Tournament long-form pipeline:
-    tries Openverse first, falls back to a local file in music/. Returns
-    (path_or_None, attribution_or_None)."""
-    music_path = None
-    music_attribution = None
+    tries Openverse first when allowed, then a local file in music/. Returns
+    (path_or_None, attribution_or_None). Previews use local tracks only."""
+    if allow_network:
+        try:
+            music_result = fetch_openverse_music(duration)
+            if music_result:
+                return music_result
+        except Exception as e:
+            logger.warning(f"⚠️ Openverse музыкасы қолжетімсіз, локал fallback: {e}")
+
     try:
-        music_result = fetch_openverse_music(duration)
-        if music_result:
-            music_path, music_attribution = music_result
-        if not music_path:
-            music_folder = os.path.join(base_dir, "music")
-            music_files = [
-                f for f in os.listdir(music_folder)
-                if f.endswith(('.mp3', '.wav')) and not f.startswith('_openverse')
-            ]
-            if music_files:
-                chosen_music_file = random.choice(music_files)
-                music_path = os.path.join(music_folder, chosen_music_file)
-                music_attribution = get_local_music_attribution(chosen_music_file)
+        music_folder = os.path.join(base_dir, "music")
+        music_files = [
+            f for f in os.listdir(music_folder)
+            if f.endswith(('.mp3', '.wav')) and not f.startswith('_openverse')
+        ]
+        if music_files:
+            chosen_music_file = random.choice(music_files)
+            music_path = os.path.join(music_folder, chosen_music_file)
+            return music_path, get_local_music_attribution(chosen_music_file)
     except Exception as e:
         logger.warning(f"⚠️ Музыка таңдау қатесі: {e}")
-    return music_path, music_attribution
+    return None, None
 
 
 def cleanup_temp_files():
@@ -476,7 +482,7 @@ def generate_video(skip_upload: bool = False, n_racers: int = None):
             sfx_clip = AudioArrayClip(sfx_array, fps=sfx_sr).subclipped(0, duration)
             audio_tracks = [sfx_clip.with_volume_scaled(SFX_VOLUME)]
 
-            music_path, music_attribution = pick_background_music(duration)
+            music_path, music_attribution = pick_background_music(duration, allow_network=not skip_upload)
 
             if music_path:
                 music_clip = AudioFileClip(music_path)

@@ -372,6 +372,14 @@ MAZE_STRUCTURE_KINDS = [
     "double_helix", "spine_branches", "terraces", "scatter_pillars", "symmetric",
 ]
 
+MAZE_ARENA_NAMES = {
+    "classic": "Classic Circuit", "sparse_labyrinth": "Deep Labyrinth",
+    "open_rooms": "Open Chambers", "spiral": "Spiral Passage",
+    "radial": "Radial Junction", "double_helix": "Double Helix",
+    "spine_branches": "Branch Run", "terraces": "Terrace Steps",
+    "scatter_pillars": "Pillar Park", "symmetric": "Mirror Maze",
+}
+
 
 # Reference (Square Race: Color Clash) boards read as one big open room —
 # racers clash, collide and bounce across a mostly-open floor with sparse
@@ -675,11 +683,27 @@ def build_wall_segments(geo, open_right, open_down, finish_col):
     return segments
 
 
-def draw_maze_background(geo, open_right, open_down, finish_col, theme):
+def _mix_color(a, b, amount):
+    return tuple(round(x + (y-x)*amount) for x, y in zip(a, b))
+
+
+def _draw_finish_stripe(draw, left, right, y, height, tile):
+    """A two-row finish line centred on the physical finish sensor."""
+    for row in range(2):
+        x, column = left, 0
+        while x < right:
+            color = (244, 249, 255) if (row+column) % 2 == 0 else (22, 32, 49)
+            draw.rectangle((x, y-height/2+row*height/2,
+                            min(right, x+tile), y-height/2+(row+1)*height/2),
+                           fill=(*color, 255))
+            x += tile
+            column += 1
+
+
+def draw_maze_background(geo, open_right, open_down, finish_col, theme, spawn_cells=()):
     w, h = int(geo.w), int(math.ceil(geo.img_h))
-    # Flat solid floor fill — reference "board game" look (flat pastel floor,
-    # chunky flat-color walls, no gradients/texture) reads cleaner and more
-    # legible in a muted autoplay feed than a textured/shaded floor did.
+    # All floor, starting-grid and wall detail is baked once. Keep the
+    # travel lanes quiet so moving racers and event labels stay prominent.
     img = Image.new("RGBA", (w, h), (*theme["floor"], 255))
     d = ImageDraw.Draw(img, "RGBA")
 
@@ -688,6 +712,23 @@ def draw_maze_background(geo, open_right, open_down, finish_col, theme):
     top = geo.top_border
     bottom = geo.top_border + geo.rows * geo.cell
     zone_bottom = bottom + geo.finish_depth
+
+    floor_detail = _mix_color(theme["floor"], theme["wall"], .06)
+    for r in range(geo.rows):
+        for c in range(geo.cols):
+            if (r+c) % 2 == 0:
+                d.rectangle((geo.cell_left(c), geo.cell_top(r),
+                             geo.cell_left(c)+geo.cell, geo.cell_top(r)+geo.cell),
+                            fill=(*floor_detail, 255))
+    # The pads are markings, not obstacles, and follow the actual shuffled
+    # starting grid rather than implying fixed lanes for roster order.
+    pad_color = _mix_color(theme["floor"], theme["accent"], .42)
+    for r, c in spawn_cells:
+        cx, cy = geo.cell_center(r, c)
+        radius = geo.racer_radius * 1.55
+        d.rounded_rectangle((cx-radius, cy-radius, cx+radius, cy+radius),
+                            radius=radius*.3, outline=(*pad_color, 255),
+                            width=max(1, round(geo.cell*.018)))
 
     # checkerboard border frame (left/right run full height, top/bottom cap it)
     tile = geo.border_w
@@ -707,27 +748,16 @@ def draw_maze_background(geo, open_right, open_down, finish_col, theme):
             row_i += 1
 
     if finish_col is not None:
-        # finish zone: green pad + checker stripe
-        d.rectangle([left, bottom, right, zone_bottom], fill=(60, 180, 90, 255))
-        stripe_h = geo.finish_depth * 0.30
-        stripe_y = bottom + geo.finish_depth * 0.30
-        tile2 = geo.cell / 6
-        xx = left
-        col_i = 0
-        while xx < right:
-            color = (250, 250, 250) if col_i % 2 == 0 else (30, 30, 34)
-            d.rectangle([xx, stripe_y, min(xx + tile2, right), stripe_y + stripe_h], fill=(*color, 255))
-            xx += tile2
-            col_i += 1
+        d.rectangle([left, bottom, right, zone_bottom], fill=(27, 116, 91, 255))
+        _draw_finish_stripe(d, left, right, geo.finish_line_y,
+                            geo.finish_depth*.24, geo.cell/6)
         fin_font = get_font(int(geo.cell * 0.32))
         ftext = "FINISH"
         ftw = d.textlength(ftext, font=fin_font)
         d.text((left + (right - left) / 2 - ftw / 2, bottom + geo.finish_depth * 0.66), ftext,
                font=fin_font, fill=(255, 255, 255, 255), stroke_width=3, stroke_fill=(0, 0, 0, 255))
 
-        # Start stripe; the countdown HUD supplies the label without
-        # embedding partially clipped text under the scrolling camera.
-        d.rectangle([left, top - geo.border_w * 0.55, right, top], fill=(*theme["accent"], 90))
+        d.rectangle([left, top, right, top+geo.wall_thickness], fill=(*pad_color, 255))
 
     # Walls drawn as flat filled rectangles (axis-aligned, since every
     # segment from build_wall_segments is purely horizontal or vertical),
@@ -738,15 +768,28 @@ def draw_maze_background(geo, open_right, open_down, finish_col, theme):
     # "tube" rendering.
     wt = geo.wall_thickness
     wall_color = theme["wall"]
+    boxes = []
     for (p1, p2) in build_wall_segments(geo, open_right, open_down, finish_col):
         x0, y0 = p1
         x1, y1 = p2
         if y0 == y1:
-            d.rectangle([min(x0, x1) - wt / 2, y0 - wt / 2, max(x0, x1) + wt / 2, y0 + wt / 2],
-                        fill=(*wall_color, 255))
+            boxes.append((min(x0,x1)-wt/2, y0-wt/2, max(x0,x1)+wt/2, y0+wt/2))
         else:
-            d.rectangle([x0 - wt / 2, min(y0, y1) - wt / 2, x0 + wt / 2, max(y0, y1) + wt / 2],
-                        fill=(*wall_color, 255))
+            boxes.append((x0-wt/2, min(y0,y1)-wt/2, x0+wt/2, max(y0,y1)+wt/2))
+    depth = max(1, round(wt*.10))
+    shadow = _mix_color(theme["floor"], (11, 20, 35), .22)
+    for x0, y0, x1, y1 in boxes:
+        d.rectangle((x0+depth, y0+depth, x1+depth, y1+depth), fill=(*shadow, 255))
+    for box in boxes:
+        d.rectangle(box, fill=(*wall_color, 255))
+    edge = _mix_color(wall_color, (255, 255, 255), .20)
+    for x0, y0, x1, y1 in boxes:
+        d.line((x0+1, y0+1, x1-1, y0+1), fill=(*edge, 255), width=depth)
+
+    # Place a compact label inside the playfield, clear of the top wall.
+    d.text(((left+right)/2, top+wt*.62), "START", anchor="mt",
+           font=get_font(max(8, int(geo.cell*.13))),
+           fill=(*_mix_color(theme["floor"], theme["wall"], .8), 255))
 
     return img
 
@@ -913,10 +956,11 @@ def simulate_race(w, h, seed, fps=24, max_seconds=28, min_seconds=13, n_racers=N
             weights = list(N_RACERS_WEIGHTS.values())
             n_racers = rng.choices(options, weights=weights, k=1)[0]
         racers = [dict(r) for r in rng.sample(RACER_POOL, n_racers)]
-    # An explicit roster (e.g. a tournament bracket) already owns its
-    # palette. Recolouring a character in each heat breaks visual identity.
+    # Object characters keep the same canonical colours as browser PNGs.
+    # Run the legacy palette pass on discarded copies to retain its RNG
+    # contract without changing identity or the seeded physics sequence.
     if forced_racers is None:
-        _boost_color_contrast(racers, rng)
+        _boost_color_contrast([dict(r) for r in racers], rng)
 
     border_w_est = w * 0.045
     cols = cols if cols is not None else max(4, round((w - 2 * border_w_est) / TARGET_CELL_PX))
@@ -933,7 +977,7 @@ def simulate_race(w, h, seed, fps=24, max_seconds=28, min_seconds=13, n_racers=N
     finish_cell = (rows - 1, finish_col)
     dist_field = finish_routes(open_right, open_down, cols, rows, finish_cell, n_racers)
     spawn_cells = balanced_spawn_cells(dist_field, cols, rows, n_racers, seed)
-    maze_img = draw_maze_background(geo, open_right, open_down, finish_col, theme)
+    maze_img = draw_maze_background(geo, open_right, open_down, finish_col, theme, spawn_cells)
 
     space = pymunk.Space()
     space.gravity = (0, 0)
@@ -1387,6 +1431,8 @@ def simulate_race(w, h, seed, fps=24, max_seconds=28, min_seconds=13, n_racers=N
         "finish_zone": (fzx, fzy),
         "spawn_cells": spawn_cells,
         "spawn_distances": [dist_field[r][c] for r,c in spawn_cells],
+        "arena_kind": structure_kind,
+        "arena_name": MAZE_ARENA_NAMES[structure_kind],
         "finale_start": len(frames) - finale_frames,
         "seed": seed,
     }
@@ -1451,7 +1497,9 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=32, min_seconds=14, n_racers
             n_racers = rng.choices(options, weights=weights, k=1)[0]
         racers = [dict(r) for r in rng.sample(RACER_POOL, n_racers)]
     if forced_racers is None:
-        _boost_color_contrast(racers, rng)
+        # Preserve legacy setup/RNG consumption, but never recolour the
+        # canonical objects independently from their browser portraits.
+        _boost_color_contrast([dict(r) for r in racers], rng)
 
     border_w_est = w * 0.045
     cols = cols if cols is not None else max(4, round((w - 2 * border_w_est) / TARGET_CELL_PX))
@@ -1465,7 +1513,7 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=32, min_seconds=14, n_racers
     finish_cell = (rows - 1, finish_col)
     dist_field = finish_routes(open_right, open_down, cols, rows, finish_cell, n_racers)
     spawn_cells = balanced_spawn_cells(dist_field, cols, rows, n_racers, seed)
-    maze_img = draw_maze_background(geo, open_right, open_down, finish_col, theme)
+    maze_img = draw_maze_background(geo, open_right, open_down, finish_col, theme, spawn_cells)
 
     left, right = geo.border_w, geo.w - geo.border_w
     top, bottom = geo.top_border, geo.top_border + rows * geo.cell
@@ -2020,6 +2068,8 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=32, min_seconds=14, n_racers
         "finish_zone": (fzx, fzy),
         "spawn_cells": spawn_cells,
         "spawn_distances": [dist_field[r][c] for r,c in spawn_cells],
+        "arena_kind": structure_kind,
+        "arena_name": MAZE_ARENA_NAMES[structure_kind],
         "finale_start": len(frames) - finale_frames,
         "seed": seed,
     }
@@ -2044,9 +2094,8 @@ DROP_RACER_ELASTICITY = 0.85
 DROP_WALL_ELASTICITY = 0.8
 
 DROP_SKY_BLUE = (110, 205, 248)
-# Highly saturated candy colors for the racers — overrides RACER_POOL's
-# softer palette for this mode only; name/weight/confusion still come from
-# the pool so a racer keeps its identity/handling, just not its house color.
+# Legacy palette constants remain available to external preview scripts.
+# Current Drop racers keep RACER_POOL colours; track art uses arena styles.
 DROP_CANDY_COLORS = [
     (255, 105, 180),  # bubblegum pink
     (70, 220, 90),    # lime green
@@ -2057,14 +2106,29 @@ DROP_CANDY_COLORS = [
 ]
 DROP_OBSTACLE_COLORS = [(255, 140, 30), (255, 255, 255), (185, 90, 240)]  # orange, white, purple
 
-# Four board layouts, picked per-seed (see `arena_kind` in simulate_drop).
-# Every kind reuses the exact same staggered peg grid — same row/col
-# spacing, same jitter, same safety margin between adjacent pegs — and
-# only masks out which grid positions actually get a peg (see
-# `_drop_peg_keep`). That guarantees no arena can introduce a
-# tighter-than-tested gap: a masked-out grid is by construction never
-# denser than the original "classic_plinko" layout that gap was tuned for.
-DROP_ARENA_KINDS = ["classic_plinko", "chevron_funnel", "blade_storm", "narrows_chute"]
+# Six board layouts, picked per-seed (see `arena_kind` in simulate_drop).
+# Every kind uses the same peg spacing, jitter and staggered phases.
+# Sparse layouts retain a few full gate pairs so masking obstacles out
+# cannot accidentally turn an entire side lane into an empty freefall.
+DROP_ARENA_KINDS = ["classic_plinko", "chevron_funnel", "blade_storm", "narrows_chute",
+                    "split_cascade", "orbit_run"]
+
+# Muted track colours keep all sixteen roster colours readable. Arena
+# identity lives in the floor/rails/obstacles, never recolouring a racer.
+DROP_ARENA_STYLES = {
+    "classic_plinko": {"name": "Classic Plinko", "floor": (208, 231, 246),
+        "rail": (42, 78, 116), "accent": (78, 176, 231), "obstacle": (74, 134, 187)},
+    "chevron_funnel": {"name": "Chevron Funnel", "floor": (246, 230, 209),
+        "rail": (112, 76, 50), "accent": (236, 164, 75), "obstacle": (189, 124, 62)},
+    "blade_storm": {"name": "Blade Storm", "floor": (231, 215, 230),
+        "rail": (93, 49, 80), "accent": (224, 119, 151), "obstacle": (166, 82, 122)},
+    "narrows_chute": {"name": "Narrows Chute", "floor": (221, 235, 216),
+        "rail": (49, 87, 65), "accent": (117, 184, 121), "obstacle": (83, 141, 102)},
+    "split_cascade": {"name": "Split Cascade", "floor": (207, 235, 235),
+        "rail": (30, 88, 106), "accent": (57, 189, 198), "obstacle": (44, 137, 157)},
+    "orbit_run": {"name": "Orbit Run", "floor": (225, 222, 243),
+        "rail": (63, 58, 112), "accent": (155, 136, 230), "obstacle": (111, 101, 181)},
+}
 
 # Spinning blades per arena, as (y_frac along the track, length as a
 # fraction of track width). Rotation direction alternates per blade,
@@ -2074,7 +2138,35 @@ DROP_ARENA_SPINNERS = {
     "chevron_funnel": [(0.50, 0.30)],
     "blade_storm": [(0.20, 0.50), (0.42, 0.42), (0.64, 0.50), (0.86, 0.42)],
     "narrows_chute": [(0.55, 0.34)],
+    "split_cascade": [(0.30, 0.34), (0.58, 0.34), (0.82, 0.30)],
+    "orbit_run": [(0.25, 0.42), (0.50, 0.48), (0.75, 0.42)],
 }
+
+# Each gate is two offset rows of real pegs between rotor chambers. Sparse
+# decorative rows alone leave a straight shot down the sides (especially
+# when only even-numbered lattice rows survive the arena mask).
+DROP_ARENA_GATES = {
+    "classic_plinko": (), "chevron_funnel": (.18, .76),
+    "blade_storm": (.08, .32, .54, .76), "narrows_chute": (.20, .80),
+    "split_cascade": (.12, .44, .70), "orbit_run": (.12, .37, .62, .88),
+}
+
+
+def _drop_gate_rows(kind, row_ys, top_y, finish_y, track_w, racer_radius, peg_radius):
+    """Choose complete staggered gates outside every blade's swept disk."""
+    clearance = peg_radius*1.8 + racer_radius*2.5 + peg_radius*.35
+    safe = [all(abs(y-(top_y+(finish_y-top_y)*fraction)) > track_w*length/2+clearance
+                for fraction, length in DROP_ARENA_SPINNERS[kind]) for y in row_ys]
+    pairs = [i for i in range(len(row_ys)-1) if safe[i] and safe[i+1]]
+    gates = {}
+    for fraction in DROP_ARENA_GATES[kind]:
+        choices = [i for i in pairs if i not in gates and i+1 not in gates]
+        if not choices:
+            break
+        target = top_y+(finish_y-top_y)*fraction
+        start = min(choices, key=lambda i: abs((row_ys[i]+row_ys[i+1])/2-target))
+        gates[start], gates[start+1] = 0, 1
+    return gates
 
 
 def _drop_peg_keep(kind, row_i, col_i, x, cx, track_w, col_spacing, progress):
@@ -2104,34 +2196,48 @@ def _drop_peg_keep(kind, row_i, col_i, x, cx, track_w, col_spacing, progress):
             return False
         wall_dist = track_w * (0.46 - 0.26 * min(1.0, progress))
         return abs(abs(x - cx) - wall_dist) < col_spacing * 0.9
+    if kind == "split_cascade":
+        # A short central divider splits the pack while alternating outer
+        # shelves hand it from one wide channel to the other.
+        divider = row_i % 2 == 0 and abs(x-cx) < col_spacing*.42
+        shelf = x < cx-track_w*.26 if (row_i//3) % 2 == 0 else x > cx+track_w*.26
+        return divider or shelf
+    if kind == "orbit_run":
+        # Sparse banks between three open rotor chambers. Masking the
+        # original lattice can only widen the tested peg gaps.
+        return row_i % 4 == 0 or (row_i % 2 == 0 and abs(x-cx) > track_w*.22)
     return True
 
 
 def _build_drop_pegs(kind, peg_rng, left, right, top_y, finish_y, h, racer_radius, peg_radius):
-    """Staggered peg field (classic Plinko/bean-machine layout) — every
-    other row offset by half the column spacing so a falling square can
-    never thread a perfectly straight gap all the way down. Spacing is in
-    racer-radius units so the gap between adjacent peg edges
-    (col_spacing - 2*peg_radius = 4.0*racer_radius here) stays a
-    comfortable ~2x a racer's diameter — wide enough that two pegs never
-    wedge a racer in place. See `_drop_peg_keep` for how arenas vary
-    without touching this spacing."""
+    """Staggered pegs with playable gates and rail-attached edge bumpers.
+
+    Free peg gaps remain over 3.2 racer radii even after jitter, wider
+    than a rotating square's 2.4-radius diagonal. Complete gate pairs
+    interrupt straight paths while retaining room to bounce through.
+    """
     track_w = right - left
     cx = (left + right) / 2
     row_spacing = racer_radius * 5.5
-    col_spacing = racer_radius * 5.0
+    # The outside pegs overlap the rail: a falling body can only meet their
+    # inward face, never enter a narrow gravity pocket between peg and rail.
+    edge_offset = racer_radius*.35
+    columns = math.ceil((track_w-2*edge_offset)/(racer_radius*5))+1
+    col_spacing = (track_w-2*edge_offset)/(columns-1)
     y_start = top_y + h * 0.24
     y_end = finish_y - h * 0.14
     pegs = []
-    y = y_start
-    row_i = 0
-    while y < y_end:
+    row_ys = [y_start+i*row_spacing for i in range(max(0, math.ceil((y_end-y_start)/row_spacing)))]
+    gates = _drop_gate_rows(kind, row_ys, top_y, finish_y, track_w, racer_radius, peg_radius)
+    base_x = left+edge_offset
+    for row_i, y in enumerate(row_ys):
         progress = 0.0 if y_end <= y_start else (y - y_start) / (y_end - y_start)
-        offset = (col_spacing / 2) if row_i % 2 else 0.0
-        x = left + peg_radius * 2.2 + offset
+        # Alternate the *retained* sparse rows, not the discarded rows.
+        phase = gates.get(row_i, (row_i//2 if kind in ("blade_storm", "orbit_run") else row_i) % 2)
+        x = base_x + phase*col_spacing/2
         col_i = 0
-        while x < right - peg_radius * 2.2:
-            if _drop_peg_keep(kind, row_i, col_i, x, cx, track_w, col_spacing, progress):
+        while x <= right-edge_offset+1e-6:
+            if row_i in gates or _drop_peg_keep(kind, row_i, col_i, x, cx, track_w, col_spacing, progress):
                 jx = peg_rng.uniform(-peg_radius * 0.35, peg_radius * 0.35)
                 jy = peg_rng.uniform(-peg_radius * 0.35, peg_radius * 0.35)
                 px, py = x + jx, y + jy
@@ -2141,20 +2247,23 @@ def _build_drop_pegs(kind, peg_rng, left, right, top_y, finish_y, h, racer_radiu
                 if all(math.hypot(px - cx, py - (top_y + (finish_y - top_y) * frac))
                        >= track_w * length / 2 + clearance
                        for frac, length in DROP_ARENA_SPINNERS[kind]):
-                    pegs.append((px, py, DROP_OBSTACLE_COLORS[len(pegs) % len(DROP_OBSTACLE_COLORS)]))
+                    palette = DROP_ARENA_STYLES[kind]
+                    color = _mix_color(palette["obstacle"], palette["accent"], .25 if len(pegs) % 2 else 0)
+                    pegs.append((px, py, color))
             x += col_spacing
             col_i += 1
-        y += row_spacing
-        row_i += 1
     return pegs
 
 
-def simulate_drop(w, h, seed, fps=24, max_seconds=22, min_seconds=8, n_racers=None, forced_racers=None):
+def simulate_drop(w, h, seed, fps=24, max_seconds=22, min_seconds=8, n_racers=None,
+                  forced_racers=None, arena_kind=None):
     """Gravity-driven descent: no target/steering state per racer at all —
     each physics step is just space.step(dt) plus bookkeeping. Camera later
     follows whichever racer is currently furthest down, the same 'leader'
     idea build_race_clip already uses for its own camera."""
     _validate_simulation(w, h, fps, max_seconds, min_seconds, n_racers, forced_racers)
+    if arena_kind is not None and arena_kind not in DROP_ARENA_KINDS:
+        raise ValueError(f"Unknown drop arena: {arena_kind}")
     rng = random.Random(seed)
 
     if forced_racers is not None:
@@ -2196,7 +2305,11 @@ def simulate_drop(w, h, seed, fps=24, max_seconds=22, min_seconds=8, n_racers=No
     # Board layout: picked per-seed from DROP_ARENA_KINDS, see there for
     # what each one looks like.
     peg_rng = random.Random(hashlib.sha256((str(seed) + "pegs").encode()).hexdigest())
-    arena_kind = peg_rng.choice(DROP_ARENA_KINDS)
+    # Consume the same choice for explicit and automatic selection so a
+    # recorded seed + arena ID reproduces its exact obstacle placement.
+    selected_kind = peg_rng.choice(DROP_ARENA_KINDS)
+    arena_kind = selected_kind if arena_kind is None else arena_kind
+    arena_style = DROP_ARENA_STYLES[arena_kind]
     pegs = _build_drop_pegs(arena_kind, peg_rng, left, right, top_y, finish_y, h, racer_radius, peg_radius)
     for (px, py, _pcolor) in pegs:
         shape = pymunk.Circle(space.static_body, peg_radius, offset=(px, py))
@@ -2222,7 +2335,7 @@ def simulate_drop(w, h, seed, fps=24, max_seconds=22, min_seconds=8, n_racers=No
         bshape.collision_type = WALL_TYPE
         space.add(bbody, bshape)
         blades.append({"body": bbody, "len": blen, "thickness": peg_radius * 0.8,
-                        "color": DROP_OBSTACLE_COLORS[bi % len(DROP_OBSTACLE_COLORS)]})
+                        "color": arena_style["accent"]})
 
     finish_shape = pymunk.Segment(space.static_body, (left, finish_y), (right, finish_y), 4)
     finish_shape.sensor = True
@@ -2252,6 +2365,7 @@ def simulate_drop(w, h, seed, fps=24, max_seconds=22, min_seconds=8, n_racers=No
     winner_idx_box = [None]
     finish_log = []
     bump_log = []
+    obstacle_contacts = [set() for _ in range(n_racers)]
     step_counter = {"n": 0}
 
     def on_begin(arbiter, space_, data):
@@ -2277,6 +2391,14 @@ def simulate_drop(w, h, seed, fps=24, max_seconds=22, min_seconds=8, n_racers=No
             return
         cx_, cy_ = cps[0].point_a.x, cps[0].point_a.y
         intensity = min(1.0, impulse / 300.0)
+        # Contact telemetry distinguishes an actual obstacle course from a
+        # clear side lane. Rails and racer-vs-racer bumps do not count.
+        if impulse >= 40:
+            for shape, other in (arbiter.shapes, tuple(reversed(arbiter.shapes))):
+                idx = shape.collision_type-RACER_TYPE_BASE
+                if (0 <= idx < n_racers and other.collision_type == WALL_TYPE and
+                    (isinstance(other, pymunk.Circle) or other.body.body_type == pymunk.Body.KINEMATIC)):
+                    obstacle_contacts[idx].add(other)
         if ct1 == WALL_TYPE or ct2 == WALL_TYPE:
             if len(bump_log) < 4000:
                 bump_log.append((step_counter["n"], cx_, cy_, intensity, "wall"))
@@ -2371,18 +2493,85 @@ def simulate_drop(w, h, seed, fps=24, max_seconds=22, min_seconds=8, n_racers=No
         "fps": fps,
         "w": w,
         "h": h,
-        "theme": {"floor": DROP_SKY_BLUE, "particle": (255, 255, 255)},  # generate_thumbnail needs these keys
+        "theme": {"floor": arena_style["floor"], "particle": arena_style["accent"],
+                  "accent": arena_style["accent"]},
         "finale_start": len(frames) - finale_frames,
         "seed": seed,
         "arena_kind": arena_kind,
+        "arena_name": arena_style["name"],
+        "obstacle_contacts": [len(contacts) for contacts in obstacle_contacts],
     }
+
+
+def draw_drop_background(race):
+    """Bake the complete static track once; frames only rotate the blades."""
+    w, h = race["w"], race["h"]
+    left, right = race["left"], race["right"]
+    top_y, finish_y = race["top_y"], race["finish_y"]
+    kind = race.get("arena_kind", "classic_plinko")
+    style = DROP_ARENA_STYLES[kind]
+    floor, rail, accent = style["floor"], style["rail"], style["accent"]
+    image_h = int(math.ceil(finish_y+h*.15))
+    img = Image.new("RGBA", (w, image_h), (*floor, 255))
+    d = ImageDraw.Draw(img)
+    gutter = _mix_color(floor, rail, .16)
+    d.rectangle((0, 0, left, image_h), fill=(*gutter, 255))
+    d.rectangle((right, 0, w, image_h), fill=(*gutter, 255))
+    marking = _mix_color(floor, rail, .10)
+    # Restrained floor markings distinguish rotor chambers from colliders.
+    for bl in race["blades"]:
+        bx, by = bl["body"].position
+        radius = bl["len"]/2 + race["racer_radius"]*.55
+        d.ellipse((bx-radius, by-radius, bx+radius, by+radius),
+                  outline=(*marking, 255), width=max(1, round(w*.002)))
+        if kind == "orbit_run":
+            d.ellipse((bx-radius*.82, by-radius*.82, bx+radius*.82, by+radius*.82),
+                      outline=(*marking, 255), width=max(1, round(w*.001)))
+    # Progress ticks sit outside the travel lane, never looking like pegs.
+    for i in range(1, 10):
+        y = top_y + race["track_h"]*i/10
+        for a, b in ((left*.45, left*.85), (right+(w-right)*.15, right+(w-right)*.55)):
+            d.line((a, y, b, y), fill=(*rail, 255), width=max(1, round(w*.002)))
+
+    radius = race["racer_radius"]
+    start_fill = _mix_color(floor, accent, .22)
+    d.rectangle((left, top_y-radius*1.3, right, top_y+radius*1.5), fill=(*start_fill, 255))
+    d.text(((left+right)/2, top_y-radius*3.5), style["name"].upper(), anchor="mt",
+           font=get_font(max(10, int(w*.036))), fill=(*rail, 255))
+    d.text(((left+right)/2, top_y-radius*1.95), "START GATE", anchor="mt",
+           font=get_font(max(8, int(w*.018))), fill=(*rail, 255))
+    d.line((left, top_y+radius*1.5, right, top_y+radius*1.5),
+           fill=(*_mix_color(floor, accent, .65), 255), width=max(2, round(w*.003)))
+
+    pr = race["peg_radius"]
+    depth = max(1, round(pr*.22))
+    shadow = _mix_color(floor, rail, .28)
+    for px, py, color in race["pegs"]:
+        d.ellipse((px-pr+depth, py-pr+depth, px+pr+depth, py+pr+depth), fill=(*shadow, 255))
+        d.ellipse((px-pr, py-pr, px+pr, py+pr), fill=(*color, 255),
+                  outline=(*rail, 255), width=max(1, round(pr*.10)))
+        d.arc((px-pr*.72, py-pr*.72, px+pr*.72, py+pr*.72), 205, 310,
+              fill=(*_mix_color(color, (255,255,255), .55), 255), width=max(1, round(pr*.16)))
+
+    d.rectangle((left, finish_y, right, image_h), fill=(27, 116, 91, 255))
+    _draw_finish_stripe(d, left, right, finish_y, max(10, w*.035), w*.055)
+    d.text(((left+right)/2, finish_y+h*.025), "FINISH", anchor="mt",
+           font=get_font(max(12, int(w*.05))), fill=(244, 255, 250, 255))
+    rail_width = max(3, round(w*.009))
+    for x in (left, right):
+        d.line((x+rail_width*.25, 0, x+rail_width*.25, image_h),
+               fill=(*shadow, 255), width=rail_width+max(1, rail_width//3))
+        d.line((x, 0, x, image_h), fill=(*rail, 255), width=rail_width)
+        d.line((x-rail_width*.25, 0, x-rail_width*.25, image_h),
+               fill=(*_mix_color(rail, (255,255,255), .28), 255), width=max(1, rail_width//4))
+    return img
 
 
 def build_drop_clip(race):
     """Renders simulate_drop's output. Camera/HUD/intro/win-banner scaffold
     mirrors build_race_clip; the maze image is replaced by a procedurally
-    drawn peg field + side walls + spinning blades, redrawn fresh each
-    frame (blades rotate) instead of a single cached background image."""
+    cached peg field + side walls. Only spinning blades and racers are
+    drawn afresh for each frame."""
     from moviepy import VideoClip
 
     w, h, fps = race["w"], race["h"], race["fps"]
@@ -2393,11 +2582,11 @@ def build_drop_clip(race):
     n_frames = len(frames)
     left, right = race["left"], race["right"]
     top_y, track_h, finish_y = race["top_y"], race["track_h"], race["finish_y"]
-    pegs = race["pegs"]
-    peg_radius = race["peg_radius"]
     blades = race["blades"]
     racer_radius = race["racer_radius"]
-    track_img_h = int(math.ceil(finish_y + h * 0.15))
+    track_img = draw_drop_background(race)
+    track_img_h = track_img.height
+    arena_style = DROP_ARENA_STYLES[race.get("arena_kind", "classic_plinko")]
 
     ICON_SIZE = int(racer_radius * 2.4)
     icons = [make_racer_icon(r["color"], ICON_SIZE, name=r["name"]) for r in racers]
@@ -2407,44 +2596,35 @@ def build_drop_clip(race):
 
     camera_tops = _camera_positions(race, track_img_h, viewport_h, average=False)
     views = _presentation_states(race, camera_tops, viewport_h)
-    accent = (80, 198, 246)
+    accent = arena_style["accent"]
 
     ambient_particles = _make_ambient_particles(race["seed"], 14, w, h)
 
-    BORDER_COLOR = (255, 255, 255)  # thick white side rails, playful contrast on sky-blue
-
     def _draw_track(crop_top, crop_bottom, blade_angles):
-        img = Image.new("RGBA", (w, crop_bottom - crop_top), (*DROP_SKY_BLUE, 255))
+        img = track_img.crop((0, crop_top, w, crop_bottom))
         d = ImageDraw.Draw(img, "RGBA")
-        for (px, py, pcolor) in pegs:
-            ry = py - crop_top
-            if -peg_radius <= ry <= img.height + peg_radius:
-                pdark = tuple(max(0, c - 60) for c in pcolor)
-                d.ellipse([px - peg_radius, ry - peg_radius, px + peg_radius, ry + peg_radius],
-                          fill=(*pcolor, 255), outline=(*pdark, 255), width=3)
-        for wx in (left, right):
-            d.line([(wx, 0), (wx, img.height)], fill=(*BORDER_COLOR, 255), width=10)
         for bl, ang in zip(blades, blade_angles):
             bx, by = bl["body"].position
             ry = by - crop_top
             half_len = bl["len"] / 2
+            if ry+half_len < 0 or ry-half_len > img.height:
+                continue
             rad = math.radians(-ang)
             dx, dy = math.cos(rad) * half_len, math.sin(rad) * half_len
             bcolor = bl["color"]
-            bdark = tuple(max(0, c - 60) for c in bcolor)
+            bdark = arena_style["rail"]
+            depth = max(1, round(bl["thickness"]*.3))
+            d.line([(bx-dx+depth, ry-dy+depth), (bx+dx+depth, ry+dy+depth)],
+                   fill=(*_mix_color(arena_style["floor"], bdark, .3), 255),
+                   width=max(1, int(bl["thickness"]*2)))
             d.line([(bx - dx, ry - dy), (bx + dx, ry + dy)], fill=(*bcolor, 255),
                    width=max(1, int(bl["thickness"] * 2)))
             for sign in (-1, 1):
                 d.ellipse([bx + sign * dx - bl["thickness"], ry + sign * dy - bl["thickness"], bx + sign * dx + bl["thickness"], ry + sign * dy + bl["thickness"]],
                           fill=(*bdark, 255))
-        fin_ry = finish_y - crop_top
-        if 0 <= fin_ry <= img.height:
-            d.rectangle([left, fin_ry - 6, right, fin_ry + 6], fill=(60, 210, 100, 255))
-            fin_font = get_font(int(h * 0.03))
-            ftext = "FINISH"
-            ftw = d.textlength(ftext, font=fin_font)
-            d.text((left + (right - left) / 2 - ftw / 2, fin_ry + 10), ftext, font=fin_font,
-                   fill=(255, 255, 255, 255), stroke_width=3, stroke_fill=(0, 0, 0, 255))
+            hub = bl["thickness"]*.8
+            d.ellipse((bx-hub, ry-hub, bx+hub, ry+hub), fill=(*bdark, 255),
+                      outline=(244,249,255,255), width=max(1, depth))
         return img
 
     def make_frame(t):
@@ -2456,16 +2636,20 @@ def build_drop_clip(race):
         crop_top = int(cam_top)
         crop_bottom = min(track_img_h, crop_top + viewport_h)
         track_slice = _draw_track(crop_top, crop_bottom, st.get("blade_angles", [0, 0]))
-        img = Image.new("RGBA", (w, h), (*DROP_SKY_BLUE, 255))
+        img = Image.new("RGBA", (w, h), (*arena_style["floor"], 255))
         img.paste(track_slice, (0, HUD_MARGIN))
 
         d = ImageDraw.Draw(img, "RGBA")
 
         for p in ambient_particles:
             twinkle = 0.5 + 0.5 * math.sin(t * 1.6 + p["phase"])
-            r = p["r"]
-            alpha = int(50 + 90 * twinkle)
-            d.ellipse([p["x"] - r, p["y"] - r, p["x"] + r, p["y"] + r], fill=(255, 255, 255, alpha))
+            r = min(p["r"], w*.003)
+            # Cosmetic glints stay in the gutters. A bright dot inside the
+            # track can otherwise be mistaken for a physical peg.
+            fraction = (p["x"] % (w/2))/(w/2)
+            px = left*(.2+.5*fraction) if p["x"] < w/2 else right+(w-right)*(.3+.5*fraction)
+            color = _mix_color(arena_style["floor"], (255,255,255), .35+.3*twinkle)
+            d.ellipse([px-r, p["y"]-r, px+r, p["y"]+r], fill=(*color, 255))
 
         if not in_intro:
             for fi in range(max(0, idx - 6), idx + 1):
@@ -2488,7 +2672,7 @@ def build_drop_clip(race):
             ry = y - crop_top + HUD_MARGIN
             if ry < HUD_MARGIN - ICON_SIZE or ry > h + ICON_SIZE:
                 continue
-            icon = icons[i].rotate(ang, resample=Image.BICUBIC)
+            icon = icons[i].rotate(ang, resample=Image.BICUBIC, expand=True)
             img.alpha_composite(icon, (int(x - icon.width / 2), int(ry - icon.height / 2)))
 
         if not in_intro:
@@ -2885,7 +3069,7 @@ def build_race_clip(race):
             ry = y - crop_top + HUD_MARGIN
             if ry < HUD_MARGIN - ICON_SIZE or ry > h + ICON_SIZE:
                 continue
-            icon = icons[i].rotate(ang, resample=Image.BICUBIC)
+            icon = icons[i].rotate(ang, resample=Image.BICUBIC, expand=True)
             img.alpha_composite(icon, (int(x - icon.width / 2), int(ry - icon.height / 2)))
 
         if not in_intro:
@@ -3052,7 +3236,7 @@ def build_battle_clip(race):
                 continue
             is_armed = st["armed"][i] if "armed" in st else False
             icon_set = icons_armed if is_armed else icons_unarmed
-            icon = icon_set[i].rotate(-ang, resample=Image.BICUBIC)
+            icon = icon_set[i].rotate(-ang, resample=Image.BICUBIC, expand=True)
             img.alpha_composite(icon, (int(x - icon.width / 2), int(ry - icon.height / 2)))
             exposure = st.get("storm_exposure", [0] * n)[i]
             if exposure > 0 and not in_intro:

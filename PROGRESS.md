@@ -1,8 +1,83 @@
 # Marble Race Bot — Setup Progress Log
 
-Latest update: 2026-10-07. Update this file whenever a setup step changes —
+Latest update: 2026-10-18. Update this file whenever a setup step changes —
 session/machine switches have already lost unsaved browser work once, this
 file is the durable record.
+
+## Character identities and offline music (2026-10-18)
+
+- Completed the character redesign deferred during the arena update. All
+  16 racers now have original object silhouettes and readable expressions:
+  banana, boba, matcha, donut, gummy bear, robot, cat, fox, ghost, cloud,
+  cherries, jelly UFO, peach, frog, bee and dragon.
+- `racer_art.py` is the shared artwork and identity source. The export
+  script regenerates all 16 PNGs plus a browser catalog and JSON manifest.
+  Existing names remain stable IDs for selections, replay and statistics.
+  Setup cards, selected-character details, standings and results now show
+  the object identity as well as the racer name.
+- Canonical colours also survive random video roster selection; the
+  legacy palette pass runs on copies to preserve seeded RNG consumption.
+  Channel avatar/banner generators now pass named identities and their
+  local image outputs have been regenerated with the new artwork.
+- Video sprite rotation expands the temporary image, preserving ears,
+  straws, wings and Battle badges at every angle. Regression checks compare
+  browser PNGs with canonical Python artwork and check unique silhouettes
+  at 32, 64 and 256 pixels.
+- Completed the local music backlog with three original, reproducible WAV
+  loops and attribution metadata. All four `skip_upload=True` pipelines
+  use local music without requesting Openverse. Normal publication still
+  tries Openverse and falls back to the bundled library.
+- Offline audio validation encoded and decoded Race, Battle, Drop and a
+  48-second Tournament; the latter exercises music looping. Audio was
+  finite, audible and unclipped. No publishing service was contacted.
+- Final validation: all 554 Python tests, eight browser-engine test groups
+  and four browser viewport runs passed. Desktop/phone crew selection,
+  live races, results, dark/light surfaces and actual 32px portraits were
+  visually reviewed. Music tests also cover unexpected download exceptions
+  falling back locally. `git diff --check` is clean.
+
+## Game interface and arena update (2026-10-18)
+
+- Rebuilt the browser experience around a home screen, a single race setup
+  screen and a live track with standings. The existing character artwork is
+  retained for this stage; the user wants character redesign after arenas.
+- Extracted the browser engine, interface state and styles to
+  `web/game-core.js`, `web/game.js` and `web/game.css`. Deploy those files
+  together with `index.html` and `assets/racers/`; there is no build step.
+- Added four selectable Maze layouts and two new Drop layouts, Split Cascade
+  and Orbit Run. Browser cards render the actual layouts. Python uses the
+  same six Drop layout IDs and supports explicit `arena_kind` selection.
+- Added pause/resume (including countdown), automatic pause when hidden,
+  leader/selected-racer cameras, live positions, optional synthesized
+  countdown/result sounds, setup persistence and local race/win counts.
+  Restart and replay preserve the seed and roster; each race contributes
+  to statistics only once, including an unfinished race that is restarted.
+- Updated arena palettes, wall depth, starting-grid markers and finish
+  stripes. Python Drop backgrounds are baked once per clip, keeping static
+  decoration out of the per-frame rendering path.
+- A motion review found near-free-fall winners in sparse Drop layouts:
+  retained peg rows aligned vertically and left uninterrupted side routes.
+  Staggering retained rows and adding paired gate rows between rotor
+  chambers now makes the obstacles part of the race. Outer pegs attach to
+  the rails so they deflect inward without creating small trapping pockets.
+  Gravity and result timing are unchanged; no minimum-duration hold was added.
+  Actual peg/blade contact counters and continuous vertical-path checks
+  guard this behavior. The final matched audit (six arenas, seeds 0–20,
+  4/6/8 racers) completed all 378 runs per engine with no obstacle-free
+  winners or straight vertical bypasses; Python reported no quality failures.
+- Made local scheduling explicitly UTC, aligned the Tournament default to
+  06:15 UTC, and guarded scheduler startup so inspection/import cannot send
+  notifications. The physics audit distinguishes valid Battle last-standing
+  wins from timeouts.
+- Added portable browser integration checks, a scoped local test server,
+  deterministic test seeds and screenshot artifacts. CI now runs the UI
+  checks in Chromium alongside Python and browser physics tests.
+- Final validation: 509 Python tests and eight Node test groups passed.
+  Browser checks passed at 1440x1000, 390x844, 360x640 and 844x390,
+  including touch targets, pause, replay, statistics and saved preferences.
+  There were no browser page errors or horizontal overflow. Updated arena
+  and interface screenshots are in `.audit-work/`; browser results and
+  viewport captures are in `.audit-work/ui-v2/`.
 
 ## Following racers and tournament qualification (2026-10-07)
 
@@ -604,9 +679,9 @@ death, guaranteeing every fight resolves.
 
 - [x] User confirmed on 2026-10-07 that the bot is running and uploading to
       YouTube. A fresh public upload was not needed for this local audit.
-- [ ] Drop 2-3 royalty-free fallback music tracks + `fallback_attribution.json`
-      into `music/` (currently empty; Openverse fetch is the primary source,
-      this is just the safety fallback — see `SETUP.md`).
+- [x] Added three original fallback tracks and `fallback_attribution.json`
+      to `music/`, with `scripts/generate_fallback_music.py` for rebuilding.
+      Local previews use these tracks without network access.
 - [ ] Confirm the 4-day tournament cron (`.github/workflows/tournament.yml`)
       day-of-month approximation is acceptable, or swap in an exact
       "days-since-last-run" check if the user wants precision.

@@ -1,0 +1,12 @@
+{
+  "name": "marble-race-browser",
+  "private": true,
+  "description": "Local browser checks for the buildless Marble Race game",
+  "scripts": {
+    "test": "node --test tests/web.test.cjs",
+    "test:browser": "node tests/browser.test.mjs"
+  },
+  "devDependencies": {
+    "playwright": "1.62.1"
+  }
+}

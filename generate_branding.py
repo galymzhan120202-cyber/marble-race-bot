@@ -93,10 +93,12 @@ def make_profile(path):
     # frozen, and keeps the avatar legible at tiny sizes (one clear subject
     # pair, not a busy scene).
     icon_size = int(S * 0.40)
-    a = make_racer_icon(racer_by_name("Sky")["color"], icon_size).rotate(-14, resample=Image.BICUBIC, expand=True)
-    b = make_racer_icon(racer_by_name("Sunny")["color"], icon_size).rotate(10, resample=Image.BICUBIC, expand=True)
-    img.alpha_composite(b, (int(S * 0.30), int(S * 0.46)))
-    img.alpha_composite(a, (int(S * 0.44), int(S * 0.22)))
+    a = make_racer_icon(racer_by_name("Sky")["color"], icon_size, name="Sky").rotate(-14, resample=Image.BICUBIC, expand=True)
+    b = make_racer_icon(racer_by_name("Sunny")["color"], icon_size, name="Sunny").rotate(10, resample=Image.BICUBIC, expand=True)
+    # Place rotated canvases by their centers so changing the silhouette
+    # does not push the pair into the bottom-right of the circular avatar.
+    img.alpha_composite(b, (int(S * 0.39) - b.width // 2, int(S * 0.61) - b.height // 2))
+    img.alpha_composite(a, (int(S * 0.60) - a.width // 2, int(S * 0.41) - a.height // 2))
 
     img.convert("RGB").save(path, "PNG")
     print(f"OK: {path}")
@@ -120,7 +122,7 @@ def make_banner(path):
         ("Slate", 190, (1900, 620), 8),
     ]
     for name, isize, pos, angle in deco:
-        icon = make_racer_icon(racer_by_name(name)["color"], isize).rotate(angle, resample=Image.BICUBIC, expand=True)
+        icon = make_racer_icon(racer_by_name(name)["color"], isize, name=name).rotate(angle, resample=Image.BICUBIC, expand=True)
         img.alpha_composite(icon, (pos[0] - icon.width // 2, pos[1] - icon.height // 2))
 
     draw = ImageDraw.Draw(img)

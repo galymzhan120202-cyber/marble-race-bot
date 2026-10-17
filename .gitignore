@@ -36,6 +36,7 @@ __pycache__/
 .audit-venv/
 .audit-work/
 .pytest_cache/
+node_modules/
 physics-audit.json
 env/
 venv/

@@ -144,7 +144,7 @@ def generate_battle_video(skip_upload: bool = False, n_racers: int = None):
             sfx_clip = AudioArrayClip(sfx_array, fps=sfx_sr).subclipped(0, duration)
             audio_tracks = [sfx_clip.with_volume_scaled(SFX_VOLUME)]
 
-            music_path, music_attribution = pick_background_music(duration)
+            music_path, music_attribution = pick_background_music(duration, allow_network=not skip_upload)
 
             if music_path:
                 music_clip = AudioFileClip(music_path)
