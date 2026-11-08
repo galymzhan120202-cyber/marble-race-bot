@@ -41,6 +41,12 @@ file is the durable record.
   Publishing and messaging are disabled in pipeline QA. The scheduled
   GitHub workflows load the updated default branch on their next run;
   already published YouTube videos remain unchanged.
+- The first Linux release check exposed a marginal Pinwheel Pass seed:
+  two racers finished at 21.92s on Windows but exceeded 22s on Linux. Its
+  five rotors now turn at 72% of the original rate to reduce repeated upward
+  launches. The other arenas retain their exact original rotor speeds. The
+  existing finish regression remains strict; 503 affected Windows checks
+  passed after the change, with Linux release validation repeated separately.
 
 ## Reactive animation and four new arenas (2026-11-08)
 

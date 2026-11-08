@@ -2235,6 +2235,10 @@ DROP_ARENA_SPINNERS = {
                       (0.66, 0.32, 0.68), (0.82, 0.28, 0.30)],
 }
 
+# Five alternating rotors should redirect a small pack, not repeatedly
+# launch it upward until the publishing time limit. Keep old arenas' speeds.
+DROP_ARENA_SPIN_SPEED = {"pinwheel_pass": .72}
+
 # Each gate is two offset rows of real pegs between rotor chambers. Sparse
 # decorative rows alone leave a straight shot down the sides (especially
 # when only even-numbered lattice rows survive the arena mask).
@@ -2430,6 +2434,7 @@ def simulate_drop(w, h, seed, fps=24, max_seconds=22, min_seconds=8, n_racers=No
         bbody = pymunk.Body(body_type=pymunk.Body.KINEMATIC)
         bbody.position = (bx, by)
         bbody.angular_velocity = (1 if bi % 2 == 0 else -1) * peg_rng.uniform(1.4, 2.2)
+        bbody.angular_velocity *= DROP_ARENA_SPIN_SPEED.get(arena_kind, 1.0)
         bshape = pymunk.Segment(bbody, (-blen / 2, 0), (blen / 2, 0), peg_radius * 0.8)
         bshape.elasticity = DROP_PEG_ELASTICITY
         bshape.friction = 0.1
