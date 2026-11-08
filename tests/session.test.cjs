@@ -23,6 +23,17 @@ test('cup rotates three distinct arenas and preserves the entrant set and select
   assert.notDeepEqual(a.rounds[0].roster,a.rounds[1].roster);
 });
 
+test('new arena links and Cup rounds preserve the selected layout and roster',()=>{
+  for(const [mode,arena] of [['race','aurora_loops'],['race','pulse_grid'],['drop','diamond_drift'],['drop','pinwheel_pass']]){
+    const input={...config,mode,arena};
+    assert.deepEqual(session.decode(session.encode(input)),input);
+    const cup=session.makeCup(input);
+    assert.equal(cup.rounds[0].arena,arena);
+    assert.equal(new Set(cup.rounds.map(round=>round.arena)).size,3);
+    for(const round of cup.rounds)assert.deepEqual(session.decode(session.encode(round)),round);
+  }
+});
+
 test('cup only scores actual finishers and cannot award a round twice',()=>{
   const cup=session.makeCup(config);
   assert.equal(session.scoreRound(cup,0,[2,0]),true);

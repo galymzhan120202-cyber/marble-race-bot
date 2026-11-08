@@ -3,22 +3,26 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#101719">
+  <meta name="theme-color" content="#101217">
   <meta name="description" content="A cloud, a banana, a boba cup and 13 more original racers. Pick your favourite, choose an arena, and watch the finish unfold.">
-  <title>Marble Race — Pick your side</title>
+  <title>Marble Race — Small racers. Big rivalries.</title>
   <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="web/game.css">
+  <link rel="stylesheet" href="web/arcade.css">
   <script src="web/game-core.js" defer></script>
   <script src="assets/racers/catalog.js" defer></script>
   <script src="web/game-session.js" defer></script>
+  <script src="web/game-presentation.js" defer></script>
   <script src="web/game.js" defer></script>
 </head>
 <body data-screen="menu">
   <a class="skip-link" href="#main">Skip to game</a>
   <header class="site-header">
     <button class="brand" data-nav="menu" aria-label="Marble Race home"><span class="brand-mark" aria-hidden="true"><i></i><i></i></span><span>MARBLE<span class="brand-light"> RACE</span><small>SMALL RACERS. BIG RIVALRIES.</small></span></button>
+    <nav class="header-nav" aria-label="Main navigation"><button data-nav="menu" class="active">The lobby</button><button data-nav="mode">Race setup <span aria-hidden="true">↗</span></button></nav>
     <div class="header-actions">
       <span class="session-pill"><span class="live-dot"></span><span id="session-label">Ready when you are</span></span>
+      <button class="icon-button motion-button" id="btn-motion" aria-label="Reduce motion" aria-pressed="false" title="Reduce motion"><span aria-hidden="true">◌</span><span class="motion-label">Motion</span></button>
       <button class="icon-button" id="btn-sound" aria-label="Turn sound on" aria-pressed="false" title="Sound off">♪<span id="sound-state">OFF</span></button>
       <button class="icon-button help-button" id="btn-help" aria-label="How to play">?</button>
     </div>
@@ -27,37 +31,25 @@
     <section class="screen active" data-screen="menu" id="screen-menu" aria-labelledby="menu-title">
       <p id="link-notice" class="link-notice" hidden role="status"></p>
       <div class="hero-copy">
-        <p class="eyebrow"><span></span>YOUR NEXT PHOTO FINISH</p>
-        <h1 id="menu-title">Pick your side.<br>Follow the <em>chaos.</em></h1>
-        <p class="hero-description">A cloud, a banana, a boba cup…<br>Meet an unlikely crew of sixteen. Pick a favourite and let physics settle it.</p>
-        <div class="hero-actions"><button class="button primary" id="btn-quick">Quick race <span aria-hidden="true">↗</span></button><button class="button subtle" id="btn-play">Make it yours</button></div>
-        <div class="hero-shortcut"><span>Your saved setup. Straight to the start.</span><button class="text-button" id="btn-how">How to play <span aria-hidden="true">→</span></button></div>
-        <div class="hero-numbers"><div><strong>16</strong><span>original characters</span></div><div><strong>10</strong><span>arena layouts</span></div><div><strong>2–8</strong><span>on the grid</span></div></div>
+        <p class="eyebrow"><span class="live-dot"></span>THE LITTLE RACE WITH BIG ENERGY</p>
+        <h1 id="menu-title">SMALL RACERS.<br>BIG <em>RIVALRIES.</em></h1>
+        <p class="hero-description">Pick a favourite. Watch the chaos.<br>Sixteen unlikely racers. One very satisfying finish.</p>
+        <div class="hero-actions"><button class="button primary" id="btn-quick"><span class="play-symbol" aria-hidden="true">▶</span> Quick race <span aria-hidden="true">↗</span></button><button class="button subtle" id="btn-play">Build your race <span aria-hidden="true">+</span></button></div>
+        <div class="hero-shortcut"><span>No downloads. Just one more race.</span><button class="text-button" id="btn-how">How to play <span aria-hidden="true">↗</span></button></div>
+        <div class="hero-numbers"><div><strong>16<span>↗</span></strong><span>original racers</span></div><div><strong>14<span>↗</span></strong><span>ways to the finish</span></div><div><strong>2–8<span>↗</span></strong><span>rivals per race</span></div></div>
       </div>
-      <div class="hero-visual" aria-hidden="true">
-        <div class="visual-top"><span><i class="live-dot"></i> MEET THE UNLIKELY CREW</span><span>01 / ∞</span></div>
-        <div class="showcase-board">
-          <svg viewBox="0 0 480 450" class="showcase-track">
-            <defs><pattern id="grid" width="38" height="38" patternUnits="userSpaceOnUse"><path d="M38 0H0V38" fill="none" stroke="#29403f" stroke-width="1"/></pattern><pattern id="checker" width="28" height="28" patternUnits="userSpaceOnUse"><rect width="28" height="28" fill="#dce7d8"/><rect width="14" height="14" fill="#233635"/><rect x="14" y="14" width="14" height="14" fill="#233635"/></pattern></defs>
-            <rect width="480" height="450" rx="20" fill="#182729"/><rect x="20" y="20" width="440" height="410" fill="url(#grid)"/>
-            <path d="M75 58V140H203V242H351V330H245V397" fill="none" stroke="#c2f06a" stroke-opacity=".14" stroke-width="44" stroke-linecap="round" stroke-linejoin="round"/>
-            <path d="M75 58V140H203V242H351V330H245V397" fill="none" stroke="#c2f06a" stroke-opacity=".6" stroke-width="2" stroke-dasharray="5 10"/>
-            <g fill="none" stroke="#0c1518" stroke-width="19" stroke-linecap="round" stroke-linejoin="round" transform="translate(0 7)"><path d="M125 45V93H270V170H410M33 205H140V312H67M270 103H365V54M202 300V355H145M292 386H420V252M45 400H175"/></g>
-            <g fill="none" stroke="#5f8280" stroke-width="15" stroke-linecap="round" stroke-linejoin="round"><path d="M125 45V93H270V170H410M33 205H140V312H67M270 103H365V54M202 300V355H145M292 386H420V252M45 400H175"/></g>
-            <rect x="209" y="380" width="70" height="28" rx="3" fill="url(#checker)"/><text x="243" y="432" fill="#c2f06a" text-anchor="middle" font-size="11" font-family="sans-serif" font-weight="700" letter-spacing="3">FINISH</text>
-          </svg>
-          <img class="hero-racer racer-sky" src="assets/racers/sky.png" alt="" width="72" height="72">
-          <img class="hero-racer racer-sunny" src="assets/racers/sunny.png" alt="" width="64" height="64">
-          <img class="hero-racer racer-rosy" src="assets/racers/rosy.png" alt="" width="62" height="62">
-          <img class="hero-racer racer-minty" src="assets/racers/minty.png" alt="" width="60" height="60">
-          <div class="follow-tag">SKY THE CLOUD <span>YOUR PICK</span></div>
-        </div>
-        <div class="visual-bottom"><span>SMALL CREW. BIG PERSONALITIES.</span><span>↗</span></div>
+      <div class="hero-visual">
+        <div class="visual-top"><span><i class="live-dot"></i> THE WARM-UP</span><span>REAL GAME PREVIEW</span></div>
+        <div class="showcase-board"><canvas id="demo-canvas" width="640" height="520" aria-label="An automatic preview of the Maze Race. Start your own race with Quick race."></canvas><div class="demo-caption"><span class="demo-label">OPEN ROOMS</span><strong id="demo-caption">Six racers. Anyone's race.</strong></div><div class="demo-sticker" aria-hidden="true">LET'S<br>ROLL!<span>↗</span></div></div>
+        <div class="visual-bottom"><span><span class="preview-dot"></span> PHYSICS DOES THE DRIVING</span><button id="btn-demo" class="text-button" aria-label="Pause preview" aria-pressed="false">Ⅱ Pause preview</button></div>
       </div>
+      <div class="lobby-heading"><div><p class="eyebrow">CHOOSE YOUR KIND OF CHAOS</p><h2>Good luck picking just one.</h2></div><span class="tiny-label">PICK · WATCH · CHEER</span></div>
       <div class="mode-discovery">
-        <button class="discovery-card" data-enter-mode="race"><span class="discovery-icon">↳</span><span><small>FIND YOUR WAY</small><strong>Maze Race</strong><span>Sharp corners. Unexpected comebacks.</span></span><b aria-hidden="true">↗</b></button>
-        <button class="discovery-card drop-discovery" data-enter-mode="drop"><span class="discovery-icon">⋮</span><span><small>LET GRAVITY DECIDE</small><strong>Marble Drop</strong><span>Pegs, spinners, and a race to the bottom.</span></span><b aria-hidden="true">↗</b></button>
+        <button class="discovery-card" data-enter-mode="race"><span class="mode-art maze-art" aria-hidden="true"><svg viewBox="0 0 260 110"><path d="M0 28H62V74H130V28H195V84H260"/><path d="M0 76H26M98 0V42M163 110V65M229 0V43"/></svg><img src="assets/racers/sky.png" alt="" width="76" height="76"></span><span class="mode-card-copy"><small>01 / FIND YOUR WAY</small><strong>Maze Race</strong><span>Sharp turns. Unlikely comebacks.</span></span><b aria-hidden="true">↗</b></button>
+        <button class="discovery-card drop-discovery" data-enter-mode="drop"><span class="mode-art drop-art" aria-hidden="true"><svg viewBox="0 0 260 110"><g><circle cx="26" cy="26" r="7"/><circle cx="78" cy="26" r="7"/><circle cx="130" cy="26" r="7"/><circle cx="182" cy="26" r="7"/><circle cx="234" cy="26" r="7"/><circle cx="52" cy="74" r="7"/><circle cx="104" cy="74" r="7"/><circle cx="156" cy="74" r="7"/><circle cx="208" cy="74" r="7"/></g></svg><img src="assets/racers/rosy.png" alt="" width="76" height="76"></span><span class="mode-card-copy"><small>02 / TRUST THE FALL</small><strong>Marble Drop</strong><span>Pegs, spinners. Beautiful chaos.</span></span><b aria-hidden="true">↗</b></button>
+        <button class="discovery-card cup-discovery" id="btn-cup"><span class="mode-art cup-art" aria-hidden="true"><span class="podium-block podium-two">2</span><span class="podium-block podium-one">1</span><span class="podium-block podium-three">3</span><img src="assets/racers/sunny.png" alt="" width="76" height="76"></span><span class="mode-card-copy"><small>03 / GO THE DISTANCE</small><strong>The Three-Round Cup</strong><span>Same crew. Three tracks. One title.</span></span><b aria-hidden="true">↗</b></button>
       </div>
+      <div class="lobby-pick"><div class="lobby-pick-art"><img id="lobby-portrait" src="assets/racers/sky.png" alt="" width="68" height="68"></div><div><span class="tiny-label">IN YOUR CORNER</span><strong id="lobby-pick-name">Sky the Cloud</strong><p>Your next favourite rivalry starts with a pick.</p></div><button class="text-button" data-nav="mode">Meet the crew <span aria-hidden="true">↗</span></button><div class="lobby-record"><strong id="lobby-races">0</strong><span>RACES PLAYED</span></div><div class="lobby-record"><strong id="lobby-wins">0</strong><span>PICKS THAT WON</span></div></div>
       <section class="recent-races" id="recent-races" hidden aria-labelledby="recent-title"><div class="recent-heading"><div><p class="eyebrow">THE LAST FEW FINISHES</p><h2 id="recent-title">Recent races</h2></div><span class="tiny-label">SAVED ON THIS DEVICE</span></div><ol id="recent-list" class="recent-list"></ol></section>
     </section>
 
@@ -72,7 +64,7 @@
           <div class="field-row"><div><label for="field-val">Racers on the grid</label><span>Including your pick</span></div><div class="stepper"><button id="field-minus" aria-label="Fewer racers">−</button><output id="field-val" aria-live="polite">6</output><button id="field-plus" aria-label="More racers">+</button></div></div>
         </section>
         <section class="panel arena-panel" aria-labelledby="arena-title">
-          <div class="panel-heading"><h2 id="arena-title"><span>02</span> Your arena</h2><span class="tiny-label" id="arena-count">4 LAYOUTS</span></div>
+          <div class="panel-heading"><h2 id="arena-title"><span>02</span> Your arena</h2><span class="tiny-label" id="arena-count">6 LAYOUTS</span></div>
           <div class="mode-switch" role="group" aria-label="Game mode"><button class="mode-tile selected" data-mode="race" aria-pressed="true"><span>↳</span> Maze Race</button><button class="mode-tile" data-mode="drop" aria-pressed="false"><span>⋮</span> Marble Drop</button></div>
           <p id="mode-description" class="mode-description">Find a path through the maze. First across the line wins.</p>
           <div id="arena-box-race"><div id="arena-choices-race" class="arena-grid" aria-label="Maze layout"></div><div class="size-row"><span>Track size</span><div class="segmented" id="arena-choices" role="group" aria-label="Track size"><button data-size="s" aria-pressed="false">Compact</button><button data-size="m" class="on" aria-pressed="true">Standard</button><button data-size="l" aria-pressed="false">Long</button></div></div></div>
@@ -83,7 +75,7 @@
     </section>
 
     <section class="screen" data-screen="race" id="screen-race" aria-labelledby="live-title">
-      <div class="race-heading"><button class="text-button" data-nav="mode">← Setup</button><div><span class="tiny-label" id="live-mode">MAZE RACE</span><h1 id="live-title">Classic</h1></div><div class="race-clock"><span class="live-dot"></span><span id="race-clock">00.0</span><small>s</small></div></div>
+      <div class="race-heading"><button class="text-button" data-nav="mode">← Setup</button><div><span class="tiny-label" id="live-mode">MAZE RACE</span><h1 id="live-title">Classic</h1></div><button id="btn-focus" class="icon-button focus-button" aria-label="Expand track" aria-pressed="false" title="Expand track">⛶</button><div class="race-clock"><span class="live-dot"></span><span id="race-clock">00.0</span><small>s</small></div></div>
       <section id="cup-strip" class="cup-strip" hidden aria-label="Cup progress"><div class="cup-heading"><span class="cup-symbol" aria-hidden="true">✦</span><strong id="cup-round-label">ROUND 1 OF 3</strong><div id="cup-track" class="cup-track"></div></div><div id="cup-scores" class="cup-scores" aria-label="Cup points"></div></section>
       <div class="live-layout">
         <div class="track-panel">
@@ -94,6 +86,7 @@
             <div id="countdown" class="countdown" hidden aria-live="polite"><span id="countdown-number">3</span><small>PICKED YOUR WINNER?</small></div>
             <div id="pause-overlay" class="pause-overlay" hidden><div><span class="pause-symbol">Ⅱ</span><h2>Take a breather.</h2><p>Your race is right where you left it.</p><button class="button primary" id="btn-resume">Resume race →</button></div></div>
             <div class="winner-overlay" id="winner-overlay" hidden role="region" aria-labelledby="winner-name" aria-describedby="winner-sub" tabindex="-1">
+              <div id="celebration" class="celebration" aria-hidden="true"></div>
               <div class="winner-card"><p class="eyebrow" id="result-eyebrow">THE FINISH IS IN</p><canvas id="winner-swatch" width="120" height="120"></canvas><h2 id="winner-name">—</h2><p id="winner-identity" class="winner-identity"></p><p id="winner-sub"></p><p id="result-context" class="result-context"></p><div id="result-score" class="result-score" hidden aria-label="Cup standings"></div><div class="result-details"><span id="result-time"></span><span id="result-pick"></span></div><button class="button primary" id="btn-again">New race ↗</button><div class="result-actions"><button class="text-button" id="btn-replay">Replay this race</button><button class="text-button" id="btn-newracer">Change setup</button><button class="text-button" id="btn-share">Share this race <span aria-hidden="true">↗</span></button></div><p id="share-status" class="share-status" role="status"></p><input id="share-link" class="share-link" type="text" readonly hidden aria-label="Race replay link"></div>
             </div>
           </div>
@@ -102,6 +95,7 @@
         <aside class="race-sidebar">
           <div class="panel standings-panel"><div class="panel-heading"><h2>On the track</h2><span class="live-label" id="standings-status">LIVE</span></div><p class="standings-note" id="standings-note">Positions estimated by distance to finish.</p><ol id="standings" class="standings"></ol><div class="finish-counter"><span id="finish-count">0</span> / <span id="finish-total">6</span> finished</div></div>
           <div class="race-note"><span>↗</span><div><strong id="following-racer">Your racer: Sky</strong><p id="live-rule">First across the line wins. One corner can change the race.</p></div></div>
+          <div class="panel course-panel"><div class="panel-heading"><h2>Course radar</h2><span class="tiny-label">YOUR PICK <i class="live-dot"></i></span></div><canvas id="course-map" width="480" height="340" aria-label="Full course map. The highlighted dot is your racer; the outlined area is the camera view."></canvas><p class="standings-note">The outline shows your camera view.</p></div>
           <div class="keyboard-note"><kbd>Space</kbd> pause <span>·</span> <kbd>Esc</kbd> resume / pause</div>
         </aside>
       </div>

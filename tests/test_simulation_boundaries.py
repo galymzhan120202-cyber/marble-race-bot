@@ -120,7 +120,7 @@ def test_partial_frame_does_not_reemit_previous_interval_bumps(monkeypatch, run)
             racer = next(s for s in space.shapes if s.collision_type == sim.RACER_TYPE_BASE)
             arbiter = SimpleNamespace(
                 shapes=(wall, racer), total_impulse=pymunk.Vec2d(1, 0),
-                contact_point_set=SimpleNamespace(points=[
+                contact_point_set=SimpleNamespace(normal=pymunk.Vec2d(1, 0), points=[
                     SimpleNamespace(point_a=pymunk.Vec2d(-9876, -5432))]))
             callbacks[id(space)](arbiter, space, None)
         return result
@@ -136,7 +136,7 @@ def test_partial_frame_does_not_reemit_previous_interval_bumps(monkeypatch, run)
 
 def test_real_finish_before_fractional_time_limit_is_not_lost():
     race = sim.simulate_race(1080, 1920, 0, n_racers=4,
-                            min_seconds=0, max_seconds=1951.1 / sim.PHYSICS_HZ)
+                            min_seconds=0, max_seconds=1951.1 / sim.PHYSICS_HZ, arena_kind="spiral")
     assert race["winner_finished"]
     assert race["frames"][-1]["step"] == 1951
     assert not race["frames"][-1]["active"][race["winner_idx"]]

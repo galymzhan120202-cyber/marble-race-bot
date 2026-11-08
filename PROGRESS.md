@@ -1,8 +1,137 @@
 # Marble Race Bot — Setup Progress Log
 
-Latest update: 2026-10-18. Update this file whenever a setup step changes —
+Latest update: 2026-11-08. Update this file whenever a setup step changes —
 session/machine switches have already lost unsaved browser work once, this
 file is the durable record.
+
+## YouTube motion and arena rollout (2026-11-08)
+
+- Ported the browser's reactive motion to the Python video generators.
+  `video_motion.py` records physical contact normals and impulses, then renders
+  a damped squash/rebound, speed-dependent ribbons and directional sparks.
+  Contact history, trail samples and particles are bounded; static arena art
+  and portraits are cached, and offscreen effects are culled.
+- Race, Battle, Drop and tournament heats share deterministic presentation
+  timelines. MoviePy can request frames out of order without changing pixels
+  or simulation state. The camera eases up to 1.12x around current action and
+  the deciding finish; HUD/event text remains crisp and visibility indicators
+  use the actual camera crop. Camera planning does not inspect future results.
+- Sixteen character victory profiles run for 3.2 seconds in result cards,
+  qualifier tiles and the tournament champion outro. Audio follows the full
+  clip duration. Recorded Shorts retain the configured 60 FPS.
+- Added Aurora Loops and Pulse Grid to the Python maze rotation, and Diamond
+  Drift and Pinwheel Pass to Drop. Python now has 12 maze layouts and 8 Drop
+  layouts. New maze palettes and arena titles distinguish the courses.
+  Maze/Battle accept `arena_kind` as well as seed for explicit replays;
+  automatic arena selection includes the new layouts.
+- Validation: 865 Python tests and 32 Node tests passed. All new arenas have
+  connectivity/collision-clearance, real-finish and cross-FPS checks. An exact
+  comparison of 52 original seeded Race/Battle/Drop runs preserved every
+  physics frame, bump, finish and final ranking with the arena held fixed.
+  Boundary regressions pin their historical arena instead of depending on
+  a changing automatic arena list.
+- Offline 60 FPS previews for all four new arenas are in
+  `.audit-work/youtube-motion/`; validation logs and frame sheets are retained
+  there. A fifth Battle preview also passed, and the actual four video
+  pipelines encoded/decoded with audio and matching durations, including a
+  74.95-second abbreviated tournament. The final 1080p camera path uses an
+  opaque RGB resize instead of an RGBA affine transform; a local 30-frame
+  sample averaged 105ms per frame (about 190s of rendering for a 30s/60FPS
+  video, excluding encoding). This is a local measurement, not a runner SLA.
+  Publishing and messaging are disabled in pipeline QA. The scheduled
+  GitHub workflows load the updated default branch on their next run;
+  already published YouTube videos remain unchanged.
+
+## Reactive animation and four new arenas (2026-11-08)
+
+- Collision contacts now record their normal and speed. Racers squash along
+  that normal, rebound with a damped spring and settle; repeated resting
+  contacts cannot restart the motion indefinitely. Fast racers leave tapered
+  ribbons and speed streaks. Contact strength controls directional sparks,
+  with bounded history and a per-frame particle budget.
+- The render-only camera eases into a crop of at most 12% for lead changes,
+  close races, strong hits and the finish. It keeps the selected camera target
+  visible and clamps to the real course. Reduced motion restores a fixed view.
+- Each of the 16 characters has a victory motion profile: floating, hopping,
+  tumbling, wobbling, bowing or character-specific gestures. Shared champions
+  animate independently within their tiles. Gestures settle after 3.2 seconds,
+  suspend for help/hidden tabs, and stop on navigation or reduced motion.
+  The result composition was informed by the inspected
+  [Duolingo match-complete screen](https://mobbin.com/screens/cdc6c47f-f54a-4ac8-838f-cd25e99b2988).
+  The existing project art is used; these gestures are implemented in Canvas.
+- Mobile rendering caps high-DPI backing buffers, adapts decorative quality
+  to sustained frame workload, culls offscreen content, caches the radar
+  background and throttles radar redraws. Standings cancel/measure/animate
+  rows in batches to avoid one forced layout per row. Resize work is coalesced.
+- Added four browser arenas, bringing the total to six Maze and eight Drop:
+  Aurora Loops has connected loop chambers with alternating exits; Pulse Grid
+  has parallel lanes and staggered crossovers; Diamond Drift has weaving peg
+  corridors; Pinwheel Pass has five rotors alternating across the track.
+  New cards have a NEW marker. Cup selection, settings, replay and share
+  links all include these layouts. Existing race-link version 2 remains valid.
+- Validation: 32 Node tests passed, including all-layout connectivity,
+  collision clearance, real finishes, varied-roster podiums, camera framing,
+  bounded effects, 16 distinct gestures that stay inside their tiles, and adaptive quality.
+  An exact comparison of 30 seeded podiums on the original ten arenas
+  retained every terminal position, velocity, rotation and finish step.
+  Browser checks passed at 1440x1000, 390x844, 360x640 and 844x390 with no
+  page errors. Each size also selects all four new arenas and checks exact
+  replay/share outcomes, persistence and accessible result controls.
+- A 390x844 Chromium/Edge sample at DPR 3 and 4x CPU throttling recorded 120
+  full-motion frames: median interval 16.7ms, p95 interval 33.4ms, median JS
+  frame work 7.4ms and p95 work 21.6ms, with a 373,800-pixel render buffer.
+  These are local emulation measurements, not a native-device FPS guarantee.
+  Evidence: `.audit-work/ui-v2/motion-performance.json`, screenshots in that
+  directory, `.audit-work/arena-node-results.txt` and `arena-browser-results.txt`.
+  The subsequent YouTube rollout above ports this motion and these arenas
+  to Python; this section records the browser implementation and its QA.
+
+## Mobbin-led browser design and motion (2026-11-08)
+
+- Reviewed the static browser UI, fixed-step canvas engines, shared racer
+  assets, Cup/replay/history persistence, Python video pipeline and test
+  workflow. The browser and Python/Pymunk simulations remain separate.
+  Main UI gaps were a static lobby illustration, weak visual hierarchy,
+  limited track context and no user-controlled motion preference.
+- Rebuilt the lobby with a locally hosted Anton headline, slate/lime/lavender
+  palette, an actual independent race preview, illustrated Maze/Drop/Cup
+  entry cards, the saved pick and race statistics. Refined setup, live
+  standings, result views, responsive typography and touch targets.
+- Added fixed-step render interpolation for racers, camera and spinners;
+  tapered trails, collision rings/sparks, selected-racer highlighting,
+  animated countdown and two-axis standings transitions. Final results
+  receive a finite, one-time confetti animation. Drawing no longer prunes
+  simulation effects: their lifetime is bounded by physics steps, including
+  headless runs. The presentation never consumes race RNG or changes scores.
+- Added a full-course radar and desktop track expansion. The lobby preview
+  pauses when hidden, scrolled away, manually paused, help is open or the
+  player leaves the lobby. It cannot add results. Reduced motion follows
+  the OS until explicitly changed; that choice persists across reloads.
+- Added `npm run dev` at `http://127.0.0.1:4173`. The local server exposes
+  only `index.html`, `web/`, `assets/` and `fonts/`; browser tests reuse it.
+  Static deployments now need the existing `fonts/` directory as well.
+- Validation: 24 Node tests and 703 Python tests passed. Browser scenarios
+  passed at 1440x1000, 390x844, 360x640 and 844x390 without page errors or
+  horizontal overflow, including 44px touch targets, Cup podiums, replay,
+  sharing, history, timeout handling, cross-tab progress and failure recovery.
+  Full-motion checks also cover preview lifecycle, system/user preferences,
+  focus resizing, radar and celebration cleanup. Rendering/motion cadence
+  regressions verify unchanged seeded podiums and side-effect-free draws.
+  Visual evidence is in `.audit-work/ui-v2/`; test logs are in `.audit-work/`.
+- Scope: browser UI and animation changes are implemented. Python video
+  animations were not redesigned in this pass; their existing tests passed.
+  Browser QA used Chromium/Edge; Safari/Firefox and physical devices have
+  not been exercised. No publication or remote deployment was performed.
+
+Design references inspected through the connected Mobbin tool:
+[Duolingo match lobby](https://mobbin.com/screens/8a6c7562-5295-49e4-b54f-1868c6bb61fc)
+for mascot emphasis and a clear primary action,
+[Base44 game menu](https://mobbin.com/screens/269556ae-3bd5-4a9e-b963-e2d90dad1162)
+for a compact play/settings hierarchy, and
+[Shopify Editions hero](https://mobbin.com/sites/sections/47c5f830-b25e-4912-8484-47377cd8a238)
+for bold racing typography. The game's own art and engine provide the
+implementation. Game references: [Marble It Up!](https://marbleitup.com/)
+and [Marbles on Stream / Pixel by Pixel](https://www.pixelbypixelstudios.live/).
 
 ## Follow-up bug audit (2026-10-18)
 

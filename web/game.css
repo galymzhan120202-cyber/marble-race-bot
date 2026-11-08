@@ -11,7 +11,7 @@
 .winner-overlay{overflow-y:auto;align-items:safe center}.winner-card{flex-shrink:0;margin:auto}.pause-overlay{padding:18px;overflow:auto}
 @media(pointer:coarse){.icon-button{min-height:44px;min-width:44px}.stepper button{width:44px;height:44px}.mode-tile,.segmented button,.camera-controls button,.control-button{min-height:44px}.text-button{min-height:44px}}
 @media(max-height:740px){.winner-card{padding:16px 20px}.winner-card canvas{width:60px;height:60px;margin:10px 0 7px}.winner-card h2{font-size:26px}.winner-card .button{margin-top:14px;min-height:42px}.result-details{margin-top:10px}.result-actions{margin-top:4px}}
-@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}*,*::before,*::after{animation:none!important;transition:none!important}}
+@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}body:not([data-motion=full]) *,body:not([data-motion=full]) *::before,body:not([data-motion=full]) *::after{animation:none!important;transition:none!important}}
 @media(pointer:coarse){button{min-width:44px;min-height:44px}.button,.brand,.winner-card .button,.section-heading .subtle{min-height:44px}}
 
 /* Character identities are generated with the shared portrait artwork. */

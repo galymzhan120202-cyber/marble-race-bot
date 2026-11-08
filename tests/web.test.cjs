@@ -13,10 +13,39 @@ const finite=r=>r.racers.every(p=>[p.x,p.y,p.vx,p.vy,p.angle].every(Number.isFin
 
 test('external browser scripts parse and the page loads both in order',()=>{
   new vm.Script(source);
+  new vm.Script(fs.readFileSync(path.join(root,'web/game-presentation.js'),'utf8'));
   new vm.Script(fs.readFileSync(path.join(root,'web/game.js'),'utf8'));
   const html=fs.readFileSync(path.join(root,'index.html'),'utf8');
   assert.ok(html.includes('web/game-core.js'));
-  assert.ok(html.indexOf('web/game-core.js')<html.indexOf('web/game.js'));
+  assert.ok(html.indexOf('web/game-core.js')<html.indexOf('web/game-presentation.js'));
+  assert.ok(html.indexOf('web/game-presentation.js')<html.indexOf('web/game.js'));
+});
+
+test('rendering cadence and motion preferences cannot change race outcomes',()=>{
+  const ctx=new Proxy({}, {get:(_,key)=>key==='createRadialGradient'||key==='createLinearGradient'
+    ?()=>({addColorStop(){}}):()=>{}});
+  for(const kind of ['race','drop']){
+    const build=()=>kind==='race'?api.buildRace(41,roster(4),'s','open_rooms'):api.buildDrop(41,roster(4),'blade_storm');
+    const step=kind==='race'?api.stepRace:api.stepDrop,draw=kind==='race'?api.drawRace:api.drawDrop;
+    const headless=build(),painted=build();
+    headless.finishTarget=painted.finishTarget=3;
+    while(!headless.complete&&headless.step<120*90){
+      step(headless,headless.step/120);step(painted,painted.step/120);
+      if(painted.step%17===0){
+        painted.renderAlpha=(painted.step%10)/10;painted.reducedMotion=painted.step%34===0;
+        const before=JSON.stringify(painted);
+        draw(ctx,painted,{},painted.step/120,0);
+        draw(ctx,painted,{},painted.step/120,0);
+        assert.equal(JSON.stringify(painted),before,'drawing must be side-effect free');
+      }
+    }
+    assert.equal(headless.complete,true);assert.equal(painted.complete,true);
+    assert.deepEqual(painted.finishOrder,headless.finishOrder);
+    assert.equal(painted.step,headless.step);
+    // Each racer owns RNG functions; compare their resulting numeric state.
+    assert.equal(JSON.stringify(painted.racers),JSON.stringify(headless.racers));
+    assert.ok(headless.bumps.every(b=>headless.step/120-b.born<.47),'headless effect history expires on the simulation clock');
+  }
 });
 
 test('every maze layout is connected with distinct, clear starts and an open finish',()=>{
@@ -118,6 +147,22 @@ test('unknown layout IDs safely use the original arenas',()=>{
   assert.equal(api.buildDrop(1,roster(4),'missing').arenaKind,'classic_plinko');
 });
 
+test('every arena has distinct course geometry and the new pinwheels alternate sides',()=>{
+  const mazes=api.MAZE_ARENAS.map(arena=>{
+    const sim=api.buildRace(137,roster(6),'s',arena.id);
+    return JSON.stringify([sim.openRight,sim.openDown]);
+  });
+  const drops=api.DROP_ARENAS.map(arena=>{
+    const sim=api.buildDrop(137,roster(6),arena.id);
+    return JSON.stringify([sim.pegs.map(p=>[p.x,p.y]),sim.blades.map(b=>[b.x,b.y,b.len])]);
+  });
+  assert.equal(new Set(mazes).size,api.MAZE_ARENAS.length);
+  assert.equal(new Set(drops).size,api.DROP_ARENAS.length);
+  const pinwheels=api.buildDrop(137,roster(6),'pinwheel_pass');
+  assert.equal(pinwheels.blades.length,5);
+  assert.ok(pinwheels.blades.every((b,i)=>(i%2===0?b.x<pinwheels.stageW/2:b.x>pinwheels.stageW/2)));
+});
+
 function finishFixture(kind,distances){
   const sim=kind==='race'?api.buildRace(7,roster(distances.length),'s'):api.buildDrop(7,roster(distances.length));
   const radius=sim.geo?sim.geo.racerRadius:sim.racerRadius;
@@ -212,7 +257,7 @@ test('32-bit maze seeds retain their exact low bits',()=>{
 
 test('selected racer indicator follows the live viewport and is absent when visible',()=>{
   const texts=[],ctx=new Proxy({}, {get:(_,key)=>{
-    if(key==='fillText') return text=>texts.push(text);
+    if(key==='fillText') return text=>{if(text.includes('YOU ·'))texts.push(text);};
     if(key==='createRadialGradient') return ()=>({addColorStop(){}});
     return ()=>{};
   }});

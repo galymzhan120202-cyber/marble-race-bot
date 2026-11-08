@@ -21,6 +21,7 @@ from functools import lru_cache
 import numpy as np
 import pymunk
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
+from video_motion import ImpactRecorder, VideoMotion, VICTORY_SECONDS, victory_tile
 
 # --- Racer roster -----------------------------------------------------
 # "weight" is a mild mass/pushiness trait (heavier racers shrug off bumps and
@@ -370,6 +371,7 @@ def _bias_scatter_pillars(open_right, open_down, cols, rows, rng):
 MAZE_STRUCTURE_KINDS = [
     "classic", "sparse_labyrinth", "open_rooms", "spiral", "radial",
     "double_helix", "spine_branches", "terraces", "scatter_pillars", "symmetric",
+    "aurora_loops", "pulse_grid",
 ]
 
 MAZE_ARENA_NAMES = {
@@ -378,6 +380,7 @@ MAZE_ARENA_NAMES = {
     "radial": "Radial Junction", "double_helix": "Double Helix",
     "spine_branches": "Branch Run", "terraces": "Terrace Steps",
     "scatter_pillars": "Pillar Park", "symmetric": "Mirror Maze",
+    "aurora_loops": "Aurora Loops", "pulse_grid": "Pulse Grid",
 }
 
 
@@ -392,6 +395,7 @@ MAZE_STRUCTURE_WEIGHTS = {
     "open_rooms": 30, "classic": 20, "scatter_pillars": 15, "terraces": 15,
     "spine_branches": 5, "spiral": 4, "radial": 4, "double_helix": 3,
     "symmetric": 2, "sparse_labyrinth": 2,
+    "aurora_loops": 10, "pulse_grid": 10,
 }
 
 
@@ -404,14 +408,36 @@ def pick_maze_structure(seed):
 
 def generate_structured_maze(kind, cols, rows, rng, n_racers=6):
     """Returns (open_right, open_down) for the given MAZE_STRUCTURE_KINDS
-    entry. Every kind except "symmetric" starts from the same guaranteed-
+    entry. The loop/grid/symmetric kinds build connected lanes directly;
+    all other kinds start from the same guaranteed-
     connected spanning tree (generate_maze) and OR-merges in a kind-specific
     extra-opening pattern on top — OR-ing can only ever ADD passages, so
     full connectivity from any cell to the finish is preserved by
-    construction no matter how aggressive the pattern is. "symmetric" builds
-    its own provably-connected grid directly (see _maze_symmetric)."""
+    construction no matter how aggressive the pattern is."""
     if kind == "symmetric":
         return _maze_symmetric(cols, rows, rng)
+
+    if kind in ("aurora_loops", "pulse_grid"):
+        # Connected two-cell lanes and full-width bridges, shared with web.
+        right = [[True] * (cols - 1) for _ in range(rows)]
+        down = [[True] * cols for _ in range(rows - 1)]
+        reverse = rng.randrange(2)
+        if kind == "aurora_loops":
+            for band in range(0, rows - 2, 4):
+                for col in range(1, cols - 1):
+                    down[band + 1][col] = False
+                if band + 3 < rows - 2:
+                    to_right = (band // 4 + reverse) % 2
+                    down[band + 3] = [col >= cols - 2 if to_right else col < 2 for col in range(cols)]
+        else:
+            for row in range(2, rows - 2):
+                right[row] = [col % 2 == 0 for col in range(cols - 1)]
+            for row in range(2, rows - 2, 4):
+                right[row] = [True] * (cols - 1)
+                right[row + 1] = [True] * (cols - 1)
+                to_right = (row // 4 + reverse) % 2
+                down[row] = [col >= cols // 2 if to_right else col < cols // 2 for col in range(cols)]
+        return right, down
 
     open_right, open_down = generate_maze(cols, rows, rng)
     room_scale = max(0, n_racers - 5)
@@ -595,6 +621,18 @@ MAZE_THEMES = [
 def pick_theme(seed):
     rng = random.Random(hashlib.sha256((str(seed) + "theme").encode()).hexdigest())
     return rng.choice(MAZE_THEMES)
+
+
+def maze_arena_theme(kind, fallback):
+    palettes = {
+        "aurora_loops": ((35, 26, 56), (166, 138, 206), (255, 158, 213)),
+        "pulse_grid": ((27, 43, 40), (92, 158, 136), (152, 228, 110)),
+    }
+    if kind not in palettes:
+        return fallback
+    floor, wall, accent = palettes[kind]
+    return dict(fallback, name=MAZE_ARENA_NAMES[kind], floor=floor, wall=wall,
+                border_a=floor, border_b=wall, particle=accent, accent=accent)
 
 
 # --- Geometry helper -------------------------------------------------------
@@ -965,8 +1003,10 @@ _REPEL_STRENGTH = 1200.0
 
 
 def simulate_race(w, h, seed, fps=24, max_seconds=28, min_seconds=13, n_racers=None,
-                   cols=None, rows=None, forced_racers=None, required_finishers=1):
+                   cols=None, rows=None, forced_racers=None, required_finishers=1, arena_kind=None):
     _validate_simulation(w, h, fps, max_seconds, min_seconds, n_racers, forced_racers)
+    if arena_kind is not None and arena_kind not in MAZE_STRUCTURE_KINDS:
+        raise ValueError(f"Unknown maze arena: {arena_kind}")
     rng = random.Random(seed)
     theme = pick_theme(seed)
 
@@ -994,7 +1034,8 @@ def simulate_race(w, h, seed, fps=24, max_seconds=28, min_seconds=13, n_racers=N
 
     geo = MazeGeometry(w, cols, rows)
     maze_rng = random.Random(hashlib.sha256((str(seed) + "maze").encode()).hexdigest())
-    structure_kind = pick_maze_structure(seed)
+    structure_kind = arena_kind or pick_maze_structure(seed)
+    theme = maze_arena_theme(structure_kind, theme)
     open_right, open_down = generate_structured_maze(structure_kind, cols, rows, maze_rng, n_racers)
     finish_col = maze_rng.randrange(cols)
     finish_cell = (rows - 1, finish_col)
@@ -1066,6 +1107,7 @@ def simulate_race(w, h, seed, fps=24, max_seconds=28, min_seconds=13, n_racers=N
     # ~zero and the racer never actually sets off).
     finish_log = []  # (step, racer_idx, x, y)
     bump_log = []  # (step, x, y, intensity, kind)  kind in {"wall","racer"}
+    motion_impacts = ImpactRecorder(n_racers, RACER_TYPE_BASE, geo.racer_radius, PHYSICS_HZ)
     step_counter = {"n": 0}
     per_racer_rng = [random.Random(hashlib.sha256((str(seed) + f"racer{i}").encode()).hexdigest()) for i in range(n_racers)]
 
@@ -1166,6 +1208,7 @@ def simulate_race(w, h, seed, fps=24, max_seconds=28, min_seconds=13, n_racers=N
         cps = arbiter.contact_point_set.points
         if not cps:
             return
+        motion_impacts.record(arbiter, step_counter["n"])
         cx_, cy_ = cps[0].point_a.x, cps[0].point_a.y
         intensity = min(1.0, impulse / 400.0)
         if ct1 == WALL_TYPE or ct2 == WALL_TYPE:
@@ -1432,7 +1475,7 @@ def simulate_race(w, h, seed, fps=24, max_seconds=28, min_seconds=13, n_racers=N
     if winner_idx[0] is None and full_ranking:
         winner_idx[0] = full_ranking[0]
 
-    finale_frames = int(1.6 * fps)
+    finale_frames = math.ceil(VICTORY_SECONDS * fps)
     if frames:
         last = dict(frames[-1])
         last["pos"] = list(last["pos"])
@@ -1443,6 +1486,7 @@ def simulate_race(w, h, seed, fps=24, max_seconds=28, min_seconds=13, n_racers=N
         "frames": frames,
         "finish_frame_flags": finish_frame_flags,
         "bump_frame_flags": bump_frame_flags,
+        "motion_impacts": tuple(motion_impacts.events),
         "racers": racers,
         "n_racers": n_racers,
         "winner_idx": winner_idx[0],
@@ -1506,7 +1550,7 @@ def _place_pickups(open_right, open_down, cols, rows, rng, k):
 
 
 def simulate_battle(w, h, seed, fps=24, max_seconds=32, min_seconds=14, n_racers=None,
-                     cols=None, rows=None, forced_racers=None):
+                     cols=None, rows=None, forced_racers=None, arena_kind=None):
     """Race and combat inside a maze overtaken by a descending storm.
 
     The danger boundary is passable so racers can escape through real maze
@@ -1515,6 +1559,8 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=32, min_seconds=14, n_racers
     the field. Resolve immediately when only one racer remains.
     """
     _validate_simulation(w, h, fps, max_seconds, min_seconds, n_racers, forced_racers)
+    if arena_kind is not None and arena_kind not in MAZE_STRUCTURE_KINDS:
+        raise ValueError(f"Unknown maze arena: {arena_kind}")
     rng = random.Random(seed)
     theme = pick_theme(seed)
 
@@ -1538,7 +1584,8 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=32, min_seconds=14, n_racers
 
     geo = MazeGeometry(w, cols, rows, has_finish=True)
     maze_rng = random.Random(hashlib.sha256((str(seed) + "maze").encode()).hexdigest())
-    structure_kind = pick_maze_structure(seed)
+    structure_kind = arena_kind or pick_maze_structure(seed)
+    theme = maze_arena_theme(structure_kind, theme)
     open_right, open_down = generate_structured_maze(structure_kind, cols, rows, maze_rng, n_racers)
     finish_col = maze_rng.randrange(cols)
     finish_cell = (rows - 1, finish_col)
@@ -1632,6 +1679,7 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=32, min_seconds=14, n_racers
     elim_log = []  # (step, racer_idx, x, y)
     elimination_reasons = {}
     bump_log = []
+    motion_impacts = ImpactRecorder(n_racers, RACER_TYPE_BASE, geo.racer_radius, PHYSICS_HZ)
     step_counter = {"n": 0}
     per_racer_rng = [random.Random(hashlib.sha256((str(seed) + f"racer{i}").encode()).hexdigest()) for i in range(n_racers)]
 
@@ -1806,6 +1854,7 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=32, min_seconds=14, n_racers
         cps = arbiter.contact_point_set.points
         if not cps:
             return
+        motion_impacts.record(arbiter, step_counter["n"])
         cx_, cy_ = cps[0].point_a.x, cps[0].point_a.y
         intensity = min(1.0, impulse / 400.0)
 
@@ -2066,7 +2115,7 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=32, min_seconds=14, n_racers
     remaining_eliminated = [i for i in reversed(eliminated_order) if i != winner_idx]
     full_ranking = [winner_idx] + other_finishers + remaining_alive + remaining_eliminated
 
-    finale_frames = int(1.6 * fps)
+    finale_frames = math.ceil(VICTORY_SECONDS * fps)
     if frames:
         last = dict(frames[-1])
         last["pos"] = list(last["pos"])
@@ -2079,6 +2128,7 @@ def simulate_battle(w, h, seed, fps=24, max_seconds=32, min_seconds=14, n_racers
         "elim_frame_flags": elim_frame_flags,
         "elimination_reasons": elimination_reasons,
         "bump_frame_flags": bump_frame_flags,
+        "motion_impacts": tuple(motion_impacts.events),
         "racers": racers,
         "n_racers": n_racers,
         "winner_idx": winner_idx,
@@ -2147,7 +2197,7 @@ DROP_OBSTACLE_COLORS = [(255, 140, 30), (255, 255, 255), (185, 90, 240)]  # oran
 # Sparse layouts retain a few full gate pairs so masking obstacles out
 # cannot accidentally turn an entire side lane into an empty freefall.
 DROP_ARENA_KINDS = ["classic_plinko", "chevron_funnel", "blade_storm", "narrows_chute",
-                    "split_cascade", "orbit_run"]
+                    "split_cascade", "orbit_run", "diamond_drift", "pinwheel_pass"]
 
 # Muted track colours keep all sixteen roster colours readable. Arena
 # identity lives in the floor/rails/obstacles, never recolouring a racer.
@@ -2164,10 +2214,14 @@ DROP_ARENA_STYLES = {
         "rail": (30, 88, 106), "accent": (57, 189, 198), "obstacle": (44, 137, 157)},
     "orbit_run": {"name": "Orbit Run", "floor": (225, 222, 243),
         "rail": (63, 58, 112), "accent": (155, 136, 230), "obstacle": (111, 101, 181)},
+    "diamond_drift": {"name": "Diamond Drift", "floor": (217, 235, 247),
+        "rail": (41, 80, 118), "accent": (102, 189, 238), "obstacle": (71, 133, 181)},
+    "pinwheel_pass": {"name": "Pinwheel Pass", "floor": (246, 226, 214),
+        "rail": (107, 66, 54), "accent": (238, 157, 113), "obstacle": (176, 104, 80)},
 }
 
 # Spinning blades per arena, as (y_frac along the track, length as a
-# fraction of track width). Rotation direction alternates per blade,
+# fraction of track width, optional horizontal fraction). Rotation alternates;
 # speed is randomized per-seed same as the original 2-blade layout was.
 DROP_ARENA_SPINNERS = {
     "classic_plinko": [(0.34, 0.55), (0.63, 0.55)],
@@ -2176,6 +2230,9 @@ DROP_ARENA_SPINNERS = {
     "narrows_chute": [(0.55, 0.34)],
     "split_cascade": [(0.30, 0.34), (0.58, 0.34), (0.82, 0.30)],
     "orbit_run": [(0.25, 0.42), (0.50, 0.48), (0.75, 0.42)],
+    "diamond_drift": [(0.29, 0.36), (0.65, 0.34)],
+    "pinwheel_pass": [(0.18, 0.28, 0.30), (0.34, 0.32, 0.68), (0.50, 0.28, 0.32),
+                      (0.66, 0.32, 0.68), (0.82, 0.28, 0.30)],
 }
 
 # Each gate is two offset rows of real pegs between rotor chambers. Sparse
@@ -2185,6 +2242,7 @@ DROP_ARENA_GATES = {
     "classic_plinko": (), "chevron_funnel": (.18, .76),
     "blade_storm": (.08, .32, .54, .76), "narrows_chute": (.20, .80),
     "split_cascade": (.12, .44, .70), "orbit_run": (.12, .37, .62, .88),
+    "diamond_drift": (.12, .44, .77, .92), "pinwheel_pass": (.08, .25, .42, .59, .75, .92),
 }
 
 
@@ -2192,7 +2250,7 @@ def _drop_gate_rows(kind, row_ys, top_y, finish_y, track_w, racer_radius, peg_ra
     """Choose complete staggered gates outside every blade's swept disk."""
     clearance = peg_radius*1.8 + racer_radius*2.5 + peg_radius*.35
     safe = [all(abs(y-(top_y+(finish_y-top_y)*fraction)) > track_w*length/2+clearance
-                for fraction, length in DROP_ARENA_SPINNERS[kind]) for y in row_ys]
+                for fraction, length, *_ in DROP_ARENA_SPINNERS[kind]) for y in row_ys]
     pairs = [i for i in range(len(row_ys)-1) if safe[i] and safe[i+1]]
     gates = {}
     for fraction in DROP_ARENA_GATES[kind]:
@@ -2242,6 +2300,12 @@ def _drop_peg_keep(kind, row_i, col_i, x, cx, track_w, col_spacing, progress):
         # Sparse banks between three open rotor chambers. Masking the
         # original lattice can only widen the tested peg gaps.
         return row_i % 4 == 0 or (row_i % 2 == 0 and abs(x-cx) > track_w*.22)
+    if kind == "diamond_drift":
+        triangle = 1 - abs(1 - 2 * (row_i % 10) / 10)
+        center = cx + (triangle - .5) * track_w * .5
+        return abs(x - center) > track_w * .18 or row_i % 5 == 4
+    if kind == "pinwheel_pass":
+        return row_i % 3 == 0 or abs(x - cx) > track_w * .32
     return True
 
 
@@ -2280,9 +2344,10 @@ def _build_drop_pegs(kind, peg_rng, left, right, top_y, finish_y, h, racer_radiu
                 # Leave a full racer-width lane around the blade sweep.
                 # A rotating solid blade must not crush racers into pegs.
                 clearance = peg_radius * 1.8 + racer_radius * 2.5
-                if all(math.hypot(px - cx, py - (top_y + (finish_y - top_y) * frac))
+                if all(math.hypot(px - (left + track_w * offset[0] if offset else cx),
+                                  py - (top_y + (finish_y - top_y) * frac))
                        >= track_w * length / 2 + clearance
-                       for frac, length in DROP_ARENA_SPINNERS[kind]):
+                       for frac, length, *offset in DROP_ARENA_SPINNERS[kind]):
                     palette = DROP_ARENA_STYLES[kind]
                     color = _mix_color(palette["obstacle"], palette["accent"], .25 if len(pegs) % 2 else 0)
                     pegs.append((px, py, color))
@@ -2358,9 +2423,9 @@ def simulate_drop(w, h, seed, fps=24, max_seconds=22, min_seconds=8, n_racers=No
     # auto-integrates a kinematic body's angle from angular_velocity every
     # space.step, so no manual per-frame rotation bookkeeping needed.
     blades = []
-    for bi, (frac, len_frac) in enumerate(DROP_ARENA_SPINNERS[arena_kind]):
+    for bi, (frac, len_frac, *offset) in enumerate(DROP_ARENA_SPINNERS[arena_kind]):
         by = top_y + track_h * frac
-        bx = (left + right) / 2
+        bx = left + track_w * offset[0] if offset else (left + right) / 2
         blen = track_w * len_frac
         bbody = pymunk.Body(body_type=pymunk.Body.KINEMATIC)
         bbody.position = (bx, by)
@@ -2425,6 +2490,7 @@ def simulate_drop(w, h, seed, fps=24, max_seconds=22, min_seconds=8, n_racers=No
     finish_log = []
     bump_log = []
     obstacle_contacts = [set() for _ in range(n_racers)]
+    motion_impacts = ImpactRecorder(n_racers, RACER_TYPE_BASE, racer_radius, PHYSICS_HZ)
     step_counter = {"n": 0}
 
     def on_begin(arbiter, space_, data):
@@ -2448,6 +2514,7 @@ def simulate_drop(w, h, seed, fps=24, max_seconds=22, min_seconds=8, n_racers=No
         cps = arbiter.contact_point_set.points
         if not cps:
             return
+        motion_impacts.record(arbiter, step_counter["n"])
         cx_, cy_ = cps[0].point_a.x, cps[0].point_a.y
         intensity = min(1.0, impulse / 300.0)
         # Contact telemetry distinguishes an actual obstacle course from a
@@ -2525,7 +2592,7 @@ def simulate_drop(w, h, seed, fps=24, max_seconds=22, min_seconds=8, n_racers=No
     if winner_idx not in full_ranking:
         full_ranking = [winner_idx] + [i for i in full_ranking if i != winner_idx]
 
-    finale_frames = int(1.6 * fps)
+    finale_frames = math.ceil(VICTORY_SECONDS * fps)
     if frames:
         last = dict(frames[-1])
         last["pos"] = list(last["pos"])
@@ -2536,6 +2603,7 @@ def simulate_drop(w, h, seed, fps=24, max_seconds=22, min_seconds=8, n_racers=No
         "frames": frames,
         "finish_frame_flags": finish_frame_flags,
         "bump_frame_flags": bump_frame_flags,
+        "motion_impacts": tuple(motion_impacts.events),
         "racers": racers,
         "n_racers": n_racers,
         "winner_idx": winner_idx,
@@ -2659,7 +2727,8 @@ def build_drop_clip(race):
     viewport_h = h - HUD_MARGIN
 
     camera_tops = _camera_positions(race, track_img_h, viewport_h, average=False)
-    views = _presentation_states(race, camera_tops, viewport_h)
+    motion = VideoMotion(race, camera_tops, viewport_h, PHYSICS_HZ)
+    views = motion.presentation(_presentation_states(race, camera_tops, viewport_h))
     accent = arena_style["accent"]
 
     ambient_particles = _make_ambient_particles(race["seed"], 14, w, h)
@@ -2715,37 +2784,17 @@ def build_drop_clip(race):
             color = _mix_color(arena_style["floor"], (255,255,255), .35+.3*twinkle)
             d.ellipse([px-r, p["y"]-r, px+r, p["y"]+r], fill=(*color, 255))
 
-        if not in_intro:
-            for fi in range(max(0, idx - 6), idx + 1):
-                if fi not in race["bump_frame_flags"]:
-                    continue
-                bx, by, intensity, kind = race["bump_frame_flags"][fi]
-                age = idx - fi
-                if age <= 5:
-                    a = max(0, int(180 * intensity * (1 - age / 5.0)))
-                    ry = by - crop_top + HUD_MARGIN
-                    rr = 6 + age * 2
-                    color = (255, 220, 120) if kind == "wall" else (255, 255, 255)
-                    d.ellipse([bx - rr, ry - rr, bx + rr, ry + rr], outline=(*color, a), width=3)
-
-        for i in range(n):
-            pos = st["pos"][i]
-            if pos is None:
-                continue
-            x, y, ang = pos
-            ry = y - crop_top + HUD_MARGIN
-            if ry < HUD_MARGIN - ICON_SIZE or ry > h + ICON_SIZE:
-                continue
-            icon = icons[i].rotate(ang, resample=Image.BICUBIC, expand=True)
-            img.alpha_composite(icon, (int(x - icon.width / 2), int(ry - icon.height / 2)))
+        motion.paint(img, idx, crop_top, HUD_MARGIN, icons, in_intro)
 
         if not in_intro:
+            motion.apply_camera(img, idx, crop_top, HUD_MARGIN)
             _draw_race_events(img, race, idx, crop_top, HUD_MARGIN, views[idx])
         _draw_video_hud(img, race, st, "MARBLE DROP", accent, in_intro, idx >= finale_start and not in_intro, views[idx])
         if in_intro:
             _draw_countdown(img, t, accent)
         elif idx >= finale_start:
-            _draw_result_card(img, race, (idx - finale_start) / (fps * 0.3), accent)
+            _draw_result_card(img, race, (idx - finale_start) / (fps * 0.3), accent,
+                              (idx - finale_start) / fps)
 
         return np.array(img.convert("RGB"))
 
@@ -2889,6 +2938,10 @@ def _draw_race_events(img, race, idx, camera_top, hud_height, view):
         bounds = d.textbbox((0,0), label, font=font)
         box_w = d.textlength(label, font=font)+2*pad
         box_h = bounds[3]-bounds[1]+2*pad
+        camera = view.get("camera")
+        if camera:
+            cx, cy, cw, ch = camera
+            x, y = (x-cx)*w/cw, (y-cy)*(h-hud_height)/ch+camera_top
         left = max(pad, min(x-box_w/2, w-pad-box_w))
         base_y = y-camera_top+hud_height-age*h*.035
         for offset in (0,-1,1,-2,2,-3,3,-4,4):
@@ -2920,7 +2973,7 @@ def _draw_video_hud(img, race, frame, mode, accent, in_intro=False, is_final=Fal
         f"TOP {qualifiers} ADVANCE" if qualifiers > 1 else "FIRST TO FINISH")
     d.text((pad, height * .06), f"{status}  /  {rule}", anchor="lt",
            font=get_font(max(8, int(height * .10))), fill=(157, 173, 194, 255))
-    title = race.get("heat_title", mode)
+    title = race.get("heat_title") or race.get("arena_name", mode)
     title_font = _fit_text_font(title, get_font(int(height * .23)), w * .68)
     d.text((pad, height * .22), title, anchor="lt", font=title_font, fill=(245, 248, 255, 255))
     elapsed = 0 if in_intro else frame.get("step", 0) / PHYSICS_HZ
@@ -3020,7 +3073,7 @@ def _draw_countdown(img, t, accent):
     d.text((cx, cy), label, anchor="mm", font=get_font(int(radius * 1.08)), fill=(255, 255, 255, 255))
 
 
-def _draw_result_card(img, race, fade, accent):
+def _draw_result_card(img, race, fade, accent, elapsed=0.0):
     w, h = img.size
     card_w = int(w * (0.88 if h >= w else 0.56))
     card_h = int(min(h * 0.27, card_w * 0.52))
@@ -3038,7 +3091,8 @@ def _draw_result_card(img, race, fade, accent):
             racer = race['racers'][idx]
             center = x+card_w*(place+.5)/qualifiers
             size = int(card_h*.44)
-            icon = make_racer_icon(racer['color'],size,name=racer['name'])
+            icon = victory_tile(_hud_portrait(racer["name"], tuple(racer["color"]), size),
+                                racer["name"], elapsed, size)
             card.alpha_composite(icon,(int(center-size/2),int(y+card_h*.29)))
             name = f"{place+1}. {racer['name']}"
             font = _fit_text_font(name,get_font(int(card_h*.13)),card_w/qualifiers*.85)
@@ -3052,7 +3106,8 @@ def _draw_result_card(img, race, fade, accent):
                "timeout": "FARTHEST PROGRESS AT TIME-OUT"}[reason]
     pad = card_w * 0.06
     icon_size = int(card_h * 0.52)
-    icon = make_racer_icon(race["racers"][race["winner_idx"]]["color"], icon_size, name=race["winner_name"])
+    icon = victory_tile(_hud_portrait(race["winner_name"], tuple(race["racers"][race["winner_idx"]]["color"]), icon_size),
+                        race["winner_name"], elapsed, icon_size)
     card.alpha_composite(icon, (int(x+pad), int(y+card_h*.32)))
     tx = x+pad+icon_size+pad*.6
     d.text((x+pad, y+card_h*.09), label, font=get_font(max(10,int(card_h*.12))), fill=(*accent,255))
@@ -3087,8 +3142,9 @@ def build_race_clip(race):
     maze_img_h = maze_img.height
 
     camera_tops = _camera_positions(race, maze_img_h, viewport_h, average=False)
-    views = _presentation_states(race, camera_tops, viewport_h)
-    accent = (76, 220, 178)
+    motion = VideoMotion(race, camera_tops, viewport_h, PHYSICS_HZ)
+    views = motion.presentation(_presentation_states(race, camera_tops, viewport_h))
+    accent = theme["accent"]
 
     ambient_particles = _make_ambient_particles(race["seed"], 14, w, h)
 
@@ -3112,62 +3168,19 @@ def build_race_clip(race):
             alpha = int(30 + 70 * twinkle)
             d.ellipse([p["x"] - r, p["y"] - r, p["x"] + r, p["y"] + r], fill=(*theme["particle"], alpha))
 
-        if not in_intro:
-            for fi in range(max(0, idx - 6), idx + 1):
-                if fi not in race["bump_frame_flags"]:
-                    continue
-                bx, by, intensity, kind = race["bump_frame_flags"][fi]
-                age = idx - fi
-                if age <= 5:
-                    a = max(0, int(180 * intensity * (1 - age / 5.0)))
-                    ry = by - crop_top + HUD_MARGIN
-                    rr = 8 + age * 3
-                    color = (255, 220, 120) if kind == "wall" else (255, 255, 255)
-                    d.ellipse([bx - rr, ry - rr, bx + rr, ry + rr], outline=(*color, a), width=3)
-
-        for i in range(n):
-            pos = st["pos"][i]
-            if pos is None:
-                continue
-            x, y, ang = pos
-            ry = y - crop_top + HUD_MARGIN
-            if ry < HUD_MARGIN - ICON_SIZE or ry > h + ICON_SIZE:
-                continue
-            icon = icons[i].rotate(ang, resample=Image.BICUBIC, expand=True)
-            img.alpha_composite(icon, (int(x - icon.width / 2), int(ry - icon.height / 2)))
+        motion.paint(img, idx, crop_top, HUD_MARGIN, icons, in_intro)
 
         if not in_intro:
+            motion.apply_camera(img, idx, crop_top, HUD_MARGIN)
             _draw_race_events(img, race, idx, crop_top, HUD_MARGIN, views[idx])
         _draw_video_hud(img, race, st, "MAZE RACE", accent, in_intro, idx >= finale_start and not in_intro, views[idx])
         if in_intro:
             _draw_countdown(img, t, accent)
         elif idx >= finale_start:
-            _draw_result_card(img, race, (idx - finale_start) / (fps * 0.3), accent)
+            _draw_result_card(img, race, (idx - finale_start) / (fps * 0.3), accent,
+                              (idx - finale_start) / fps)
 
-        arr = np.array(img.convert("RGB"))
-
-        if not in_intro:
-            # A few px of camera shake right after a hard racer-vs-racer
-            # bump sells the impact (a collision that only moves an icon a
-            # few pixels can otherwise read as barely happening); wall bumps
-            # and soft grazes stay shake-free so it doesn't fire constantly.
-            shake_dx = shake_dy = 0.0
-            for fi in range(max(0, idx - 3), idx + 1):
-                flag = race["bump_frame_flags"].get(fi)
-                if not flag:
-                    continue
-                _, _, intensity, kind = flag
-                if kind != "racer" or intensity < 0.45:
-                    continue
-                age = idx - fi
-                amt = intensity * max(0.0, 1 - age / 3.0) * 5.0
-                jr = _det_jitter(fi)
-                shake_dx += math.cos(jr * 6.283) * amt
-                shake_dy += math.sin(jr * 6.283) * amt
-            if shake_dx or shake_dy:
-                arr[HUD_MARGIN:] = np.roll(arr[HUD_MARGIN:], (int(round(shake_dy)), int(round(shake_dx))), axis=(0, 1))
-
-        return arr
+        return np.array(img.convert("RGB"))
 
     duration = INTRO_SECONDS + n_frames / fps
     clip = VideoClip(make_frame, duration=duration)
@@ -3177,7 +3190,7 @@ def build_race_clip(race):
 
 def build_battle_clip(race):
     """Battle-mode counterpart to build_race_clip: same camera/HUD/intro/
-    win-banner/camera-shake scaffolding, adapted for a closed arena — camera
+    result-card/motion scaffolding, adapted for a closed arena — camera
     tracks the alive-racer centroid instead of 'furthest along', HUD shows
     ALIVE count, a shrinking red zone-tint overlay replaces the finish
     stripe, weapon pickups are drawn until collected, and elimination
@@ -3210,7 +3223,8 @@ def build_battle_clip(race):
     maze_img_h = maze_img.height
 
     camera_tops = _camera_positions(race, maze_img_h, viewport_h, average=True)
-    views = _presentation_states(race, camera_tops, viewport_h)
+    motion = VideoMotion(race, camera_tops, viewport_h, PHYSICS_HZ)
+    views = motion.presentation(_presentation_states(race, camera_tops, viewport_h))
     accent = (255, 157, 94)
 
 
@@ -3277,19 +3291,7 @@ def build_battle_clip(race):
                 img.alpha_composite(weapon_icon, (int(px - weapon_icon.width / 2),
                                                     int(ry + bob - weapon_icon.height / 2)))
 
-        if not in_intro:
-            for fi in range(max(0, idx - 6), idx + 1):
-                if fi not in race["bump_frame_flags"]:
-                    continue
-                bx, by, intensity, kind = race["bump_frame_flags"][fi]
-                age = idx - fi
-                if age <= 5:
-                    a = max(0, int(180 * intensity * (1 - age / 5.0)))
-                    ry = by - crop_top + HUD_MARGIN
-                    rr = 8 + age * 3
-                    color = (255, 220, 120) if kind == "wall" else (255, 255, 255)
-                    d.ellipse([bx - rr, ry - rr, bx + rr, ry + rr], outline=(*color, a), width=3)
-
+        motion.paint(img, idx, crop_top, HUD_MARGIN, icons_unarmed, in_intro, icons_armed, angle_sign=-1)
         for i in range(n):
             pos = st["pos"][i]
             if pos is None:
@@ -3298,10 +3300,6 @@ def build_battle_clip(race):
             ry = y - crop_top + HUD_MARGIN
             if ry < HUD_MARGIN - ICON_SIZE or ry > h + ICON_SIZE:
                 continue
-            is_armed = st["armed"][i] if "armed" in st else False
-            icon_set = icons_armed if is_armed else icons_unarmed
-            icon = icon_set[i].rotate(-ang, resample=Image.BICUBIC, expand=True)
-            img.alpha_composite(icon, (int(x - icon.width / 2), int(ry - icon.height / 2)))
             exposure = st.get("storm_exposure", [0] * n)[i]
             if exposure > 0 and not in_intro:
                 radius = ICON_SIZE * 0.68
@@ -3310,33 +3308,16 @@ def build_battle_clip(race):
                       fill=(255, 70, 76, 255), width=max(2, int(w*.004)))
 
         if not in_intro:
+            motion.apply_camera(img, idx, crop_top, HUD_MARGIN)
             _draw_race_events(img, race, idx, crop_top, HUD_MARGIN, views[idx])
         _draw_video_hud(img, race, st, "BATTLE ROYALE", accent, in_intro, idx >= finale_start and not in_intro, views[idx])
         if in_intro:
             _draw_countdown(img, t, accent)
         elif idx >= finale_start:
-            _draw_result_card(img, race, (idx - finale_start) / (fps * 0.3), accent)
+            _draw_result_card(img, race, (idx - finale_start) / (fps * 0.3), accent,
+                              (idx - finale_start) / fps)
 
-        arr = np.array(img.convert("RGB"))
-
-        if not in_intro:
-            shake_dx = shake_dy = 0.0
-            for fi in range(max(0, idx - 3), idx + 1):
-                flag = race["bump_frame_flags"].get(fi)
-                if not flag:
-                    continue
-                _, _, intensity, kind = flag
-                if kind != "racer" or intensity < 0.45:
-                    continue
-                age = idx - fi
-                amt = intensity * max(0.0, 1 - age / 3.0) * 5.0
-                jr = _det_jitter(fi)
-                shake_dx += math.cos(jr * 6.283) * amt
-                shake_dy += math.sin(jr * 6.283) * amt
-            if shake_dx or shake_dy:
-                arr[HUD_MARGIN:] = np.roll(arr[HUD_MARGIN:], (int(round(shake_dy)), int(round(shake_dx))), axis=(0, 1))
-
-        return arr
+        return np.array(img.convert("RGB"))
 
     duration = INTRO_SECONDS + n_frames / fps
     clip = VideoClip(make_frame, duration=duration)

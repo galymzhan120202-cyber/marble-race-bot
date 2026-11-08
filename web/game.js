@@ -15,17 +15,32 @@ const state = {
   arenaSize:["s","m","l"].includes(saved.arenaSize) ? saved.arenaSize : "m",
   mazeArena:validArena(MAZE_ARENAS, saved.mazeArena, "classic"),
   dropArena:validArena(DROP_ARENAS, saved.dropArena, "classic_plinko"),
-  sound:saved.sound === true, followYou:false,
+  sound:saved.sound === true, followYou:false, focusMode:false,
+  motion:["full","reduced"].includes(saved.motion)?saved.motion:"auto",
   format:saved.format === "cup" ? "cup" : "single",
   speed:[.5,1,2].includes(saved.speed) ? saved.speed : 1,
   ...GameSession.progress(saved), cup:null,
   sim:null, raf:null, lastTime:0, accumulator:0, phase:"idle", paused:false,
-  countdownRemaining:0, countdownTick:null, lastRun:null, standingsAt:-1, runId:0,
+  countdownRemaining:0, countdownTick:null, lastRun:null, standingsAt:-1, runId:0,radarAt:-Infinity,
 };
 const SIM_KINDS = {
   race:{step:stepRace,draw:drawRace,size:s=>[s.geo.w,s.viewportH || s.geo.imgH]},
   drop:{step:stepDrop,draw:drawDrop,size:s=>[s.stageW,s.viewportH]},
 };
+const motionQuery=matchMedia("(prefers-reduced-motion: reduce)");
+const frameBudget=RacePresentation.createFrameBudget(matchMedia('(pointer:coarse)').matches);
+let resizeFrame=null;
+const lobbyPreview=RacePresentation.createPreview($("demo-canvas"),$("btn-demo"),$("demo-caption"));
+function motionReduced(){return state.motion==="reduced"||(state.motion==="auto"&&motionQuery.matches);}
+function applyMotion(){
+  const reduced=motionReduced();
+  RacePresentation.setReduced(reduced);
+  $("btn-motion").setAttribute("aria-pressed",String(reduced));
+  $("btn-motion").setAttribute("aria-label","Reduce motion");
+  $("btn-motion").title=reduced?"Motion reduced":"Full motion";
+  if(state.sim){state.sim.reducedMotion=reduced;RacePresentation.resetCamera(state.sim);drawCurrent();}
+  lobbyPreview.sync(state.screen==="menu"&&!$("help-dialog").open);
+}
 let storedProgress=GameSession.progress(saved);
 const pendingResults=new Map();
 function refreshProgress(){
@@ -39,9 +54,9 @@ function persist(result=null) {
   // Merge against storage at write time so settings cannot erase its result.
   if(result)pendingResults.set(result.race,result);
   refreshProgress();
-  const {youIdx,fieldSize,mode,arenaSize,mazeArena,dropArena,sound,races,wins,format,speed,history,countedRuns} = state;
+  const {youIdx,fieldSize,mode,arenaSize,mazeArena,dropArena,sound,motion,races,wins,format,speed,history,countedRuns} = state;
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({youIdx,fieldSize,mode,arenaSize,mazeArena,dropArena,sound,races,wins,format,speed,history,countedRuns}));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({youIdx,fieldSize,mode,arenaSize,mazeArena,dropArena,sound,motion,races,wins,format,speed,history,countedRuns}));
     storedProgress=GameSession.progress(state);pendingResults.clear();
   } catch {}
   updateSession();
@@ -78,9 +93,13 @@ function updateSoundButton() {
 }
 function updateSession() {
   $("session-label").textContent = state.races ? state.races + " races · " + state.wins + " wins for your picks" : "Ready when you are";
+  $("lobby-races").textContent=state.races;
+  $("lobby-wins").textContent=state.wins;
 }
 function stopSimulation() {
   silence();
+  RacePresentation.cancelAnimations();RacePresentation.clearCelebration();RacePresentation.stopWinner();
+  if(resizeFrame!==null){cancelAnimationFrame(resizeFrame);resizeFrame=null;}
   state.runId++;
   if (state.raf !== null) cancelAnimationFrame(state.raf);
   state.raf = null; state.paused = false; state.phase = "idle";
@@ -93,12 +112,19 @@ function showScreen(name) {
   if (name !== "race") {stopSimulation();updateRaceUrl();}
   state.screen = name;
   document.body.dataset.screen = name;
+  document.body.classList.toggle("focus-mode",name==="race"&&state.focusMode);
+  document.querySelectorAll(".header-nav [data-nav]").forEach(button=>{
+    const active=button.dataset.nav===name;
+    button.classList.toggle("active",active);
+    if(active)button.setAttribute("aria-current","page");else button.removeAttribute("aria-current");
+  });
   document.querySelectorAll(".screen").forEach(el => {
     const active = el.dataset.screen === name;
     el.classList.toggle("active",active); el.setAttribute("aria-hidden",String(!active));
   });
   if (name === "mode") updateSetup();
   if (name === "menu") renderHistory();
+  lobbyPreview.sync(name==="menu");
   window.scrollTo({top:0,behavior:"instant"});
   if (name === "mode") $("setup-title").focus({preventScroll:true});
 }
@@ -173,6 +199,7 @@ function buildArenaCards() {
       const name=document.createElement("strong");name.textContent=arena.name;
       const description=document.createElement("small");description.textContent=arena.description;
       text.append(name,description);card.append(canvas,check,text);grid.append(card);
+      if(arena.isNew){const badge=document.createElement('span');badge.className='arena-new';badge.textContent='NEW';card.append(badge);}
       makePreview(canvas,mode,arena);
       card.addEventListener("click",()=>{if(mode==="race")state.mazeArena=arena.id;else state.dropArena=arena.id;updateSetup();});
     }
@@ -187,6 +214,8 @@ function updateSetup() {
   $("selected-portrait").src="assets/racers/"+racer.name.toLowerCase()+".png";
   $("selected-name").textContent=racer.name;$("selected-kind").textContent=identity.label;
   $("selected-description").textContent=identity.description;$("selected-trait").textContent=racerTrait(racer);
+  $("lobby-portrait").src="assets/racers/"+racer.name.toLowerCase()+".png";
+  $("lobby-pick-name").textContent=racer.name+" · "+identity.label;
   $("selected-portrait").closest(".selected-racer").style.setProperty("--racer-color",racer.color.join(" "));
   $("field-val").textContent=state.fieldSize;
   $("field-minus").disabled=state.fieldSize<=2;$("field-plus").disabled=state.fieldSize>=8;
@@ -280,6 +309,7 @@ function startSim(replay=false, override=null) {
   const roster=config.roster.map(i=>({...RACER_POOL[i]}));
   const sim=config.mode==="drop"?buildDrop(config.seed,roster,config.arena):buildRace(config.seed,roster,config.arenaSize,config.arena);
   sim.youIdx=config.roster.indexOf(config.youIdx);sim.kind=config.mode;sim.followYou=state.followYou;
+  sim.reducedMotion=motionReduced();sim.renderAlpha=1;sim.effectsQuality=frameBudget.tier;
   sim.finishTarget=config.finishTarget||1;sim.defaultViewportH=sim.viewportH;
   sim.startDistances=sim.racers.map(r=>progress(sim,r));sim.startDistance=sim.startDistances[sim.youIdx];sim.leaderIdx=null;sim.eventAt=-1;sim.bumpAt=-1;
   sim.isReplay=replay;sim.recorded=false;sim.runConfig=config;
@@ -287,7 +317,7 @@ function startSim(replay=false, override=null) {
   background.width=config.mode==="drop"?sim.stageW:sim.geo.w;background.height=config.mode==="drop"?sim.worldH:sim.geo.imgH;
   (config.mode==="drop"?drawDropBackground:drawMazeBackground)(background.getContext("2d"),sim);sim.offscreen=background;
   if(state.sim&&state.sim.offscreen){state.sim.offscreen.width=state.sim.offscreen.height=1;}
-  state.sim=sim;state.phase="countdown";state.countdownRemaining=1.8;state.countdownTick=null;state.accumulator=0;state.standingsAt=-1;
+  state.sim=sim;state.phase="countdown";state.countdownRemaining=1.8;state.countdownTick=null;state.accumulator=0;state.standingsAt=-1;state.radarAt=-Infinity;
   const arena=arenaInfo(config.mode,config.arena);
   $("live-title").textContent=arena.name;$("live-mode").textContent=config.mode==="drop"?"MARBLE DROP":"MAZE RACE";
   $("race-seed").textContent="RACE #"+config.seed.toString(16).toUpperCase();
@@ -305,20 +335,29 @@ function startSim(replay=false, override=null) {
   $("btn-pause").focus({preventScroll:true});
   announce(arena.name+". "+roster.length+" racers. Your pick is "+RACER_POOL[config.youIdx].name+".");
 }
-function fitCanvas() {
+function fitCanvas(reframe=true) {
   if(!state.sim||state.screen!=="race")return;
   const [w,h]=SIM_KINDS[state.sim.kind].size(state.sim),rect=$("race-stage").getBoundingClientRect();
   const worldH=state.sim.worldH||state.sim.geo.imgH;
   state.sim.viewportH=Math.min(worldH,state.sim.defaultViewportH||h,Math.max(360,w*rect.height/Math.max(1,rect.width)));
   state.sim.cameraY=Math.max(0,Math.min(worldH-state.sim.viewportH,state.sim.cameraY));
-  const viewH=state.sim.viewportH,scale=Math.min(rect.width/w,rect.height/viewH),dpr=Math.min(2,window.devicePixelRatio||1);
+  const viewH=state.sim.viewportH,scale=Math.min(rect.width/w,rect.height/viewH);
+  const dpr=frameBudget.rasterScale(w*scale,viewH*scale,window.devicePixelRatio||1);
   canvas.style.width=Math.max(1,w*scale)+"px";canvas.style.height=Math.max(1,viewH*scale)+"px";
   canvas.width=Math.max(1,Math.round(w*scale*dpr));canvas.height=Math.max(1,Math.round(viewH*scale*dpr));
   cctx.setTransform(canvas.width/w,0,0,canvas.height/viewH,0,0);
-  frameCamera();
+  canvas.dataset.quality=String(frameBudget.tier);
+  if(reframe)frameCamera();
   drawCurrent();
 }
-function drawCurrent(){if(state.sim)SIM_KINDS[state.sim.kind].draw(cctx,state.sim,state.sim.offscreen,state.sim.step*DT,state.sim.youIdx);}
+function drawCurrent(forceMap=true){
+  if(!state.sim)return;
+  SIM_KINDS[state.sim.kind].draw(cctx,state.sim,state.sim.offscreen,state.sim.step*DT,state.sim.youIdx);
+  const now=performance.now();
+  if(innerWidth>760&&!state.focusMode&&(forceMap||now-state.radarAt>=frameBudget.settings.mapInterval)){
+    RacePresentation.drawMap($("course-map"),state.sim);state.radarAt=now;
+  }
+}
 function progress(sim,racer) {
   if(sim.kind==="drop")return Math.max(0,sim.finishY-racer.y);
   return sim.distField[racer.lastCell[0]]?.[racer.lastCell[1]] ?? 1e9;
@@ -346,12 +385,18 @@ function updateStandings(force=false) {
     if(a.r.finished&&b.r.finished)return (a.r.finishStep??0)-(b.r.finishStep??0)||a.i-b.i;
     return a.d-b.d||a.i-b.i;
   });
+  const rows=Array.from($("standings").children);
+  const orderChanged=ranking.some(({i},rank)=>Number(rows[rank].dataset.racer)!==i);
+  const previousBounds=orderChanged&&!force&&!motionReduced()?new Map(rows.map(row=>[row,row.getBoundingClientRect()])):null;
   ranking.forEach(({r,i,d},rank)=>{
     const row=$("standings").querySelector('[data-racer="'+i+'"]');
     row.querySelector(".place").textContent=rank+1;
     row.querySelector(".distance").textContent=r.finished?"FINISHED":sim.kind==="drop"?Math.max(0,Math.min(99,Math.round((1-d/Math.max(1,sim.startDistances[i]))*100)))+"%":Math.round(d)+" cells";
-    row.classList.toggle("finished",r.finished);$("standings").append(row);
+    row.classList.toggle("finished",r.finished);
+    row.style.setProperty("--progress",r.finished?1:Math.max(0,Math.min(.99,1-d/Math.max(1,sim.startDistances[i]))));
+    if(orderChanged)$("standings").append(row);
   });
+  if(previousBounds)RacePresentation.reorderRows(rows,previousBounds);
   $("finish-count").textContent=sim.finishedCount;
   $("race-clock").textContent=(sim.step*DT).toFixed(1).padStart(4,"0");
   const you=sim.racers[sim.youIdx],fraction=you.finished?1:Math.max(0,Math.min(.99,1-progress(sim,you)/Math.max(1,sim.startDistance)));
@@ -385,11 +430,12 @@ function finishAtTimeLimit(sim){
 function loop(now) {
   state.raf=null;
   if(state.screen!=="race"||state.paused||!state.sim||state.phase==="finished")return;
-  const dtReal=Math.min(Math.max(0,(now-state.lastTime)/1000),.05);state.lastTime=now;
+  const workStarted=performance.now(),interval=now-state.lastTime;
+  const dtReal=Math.min(Math.max(0,interval/1000),.05);state.lastTime=now;
   if(state.phase==="countdown"){
     state.countdownRemaining-=dtReal;
     const tick=Math.max(1,Math.ceil(state.countdownRemaining/.6));
-    if(tick!==state.countdownTick){state.countdownTick=tick;$("countdown-number").textContent=tick;tone(420,.07);}
+    if(tick!==state.countdownTick){state.countdownTick=tick;$("countdown-number").textContent=tick;RacePresentation.countdown($("countdown-number"));tone(420,.07);}
     if(state.countdownRemaining<=0){state.phase="racing";$("countdown").hidden=true;$("race-status").textContent="And they’re off. First across wins.";tone(840,.18);announce("Race started.");}
   }else{
     const sim=state.sim;state.accumulator+=dtReal*state.speed;
@@ -397,10 +443,15 @@ function loop(now) {
       SIM_KINDS[sim.kind].step(sim,sim.step*DT);state.accumulator-=DT;
       if(!sim.complete&&sim.step*DT>=(sim.kind==="drop"?60:90))finishAtTimeLimit(sim);
     }
-    updateStandings();drawCurrent();
+    sim.renderAlpha=sim.complete?1:state.accumulator/DT;
+    RacePresentation.updateCamera(sim,dtReal);
+    updateStandings();drawCurrent(false);
     const bump=sim.bumps[sim.bumps.length-1];
     if(bump && bump.born>(sim.lastBumpTime??-1) && sim.step-sim.bumpAt>=18){tone(170+bump.intensity*120,.045);sim.lastBumpTime=bump.born;sim.bumpAt=sim.step;}
     if(sim.complete){showWinner(sim);return;}
+  }
+  if(frameBudget.sample(interval,performance.now()-workStarted)){
+    state.sim.effectsQuality=frameBudget.tier;fitCanvas(false);
   }
   state.raf=requestAnimationFrame(loop);
 }
@@ -412,6 +463,7 @@ function pauseRace(){
   if(!state.sim||state.phase==="finished"||state.screen!=="race"||state.paused)return;
   state.paused=true;if(state.raf!==null)cancelAnimationFrame(state.raf);state.raf=null;
   silence();
+  RacePresentation.cancelAnimations();
   $("pause-overlay").hidden=false;updatePauseControl();$("race-status").textContent="Paused. Your race can wait.";
   $("btn-resume").focus({preventScroll:true});announce("Race paused.");
 }
@@ -423,8 +475,11 @@ function resumeRace(){
 }
 function showWinner(sim){
   if(sim!==state.sim)return;
+  RacePresentation.cancelAnimations();
   if(state.raf!==null)cancelAnimationFrame(state.raf);state.raf=null;state.phase="finished";state.paused=false;
   $("countdown").hidden=true;$("pause-overlay").hidden=true;
+  sim.renderAlpha=1;
+  RacePresentation.updateCamera(sim,0);
   updateStandings(true);drawCurrent();
   const winner=sim.winner||sim.timeoutLeader||sim.racers[0],timeout=!sim.winner||sim.resultReason==="timeout",won=!timeout&&sim.racers.indexOf(winner)===sim.youIdx;
   const finishSeconds=(timeout?sim.step:(winner.finishStep??sim.step))*DT;
@@ -456,16 +511,10 @@ function showWinner(sim){
   if(timeout)$("standings-note").textContent="Time limit reached. Positions show progress; nobody won.";
   $("race-status").textContent=timeout?"Time limit · "+winner.name+" leads":winner.name+" takes the finish!";
   if(cupDone)$("race-status").textContent="Cup complete · "+(champions.map(i=>RACER_POOL[i].name).join(" & ")||"No scoring finish");
-  const winnerCanvas=$("winner-swatch"),ctx=winnerCanvas.getContext("2d");ctx.clearRect(0,0,120,120);
   const portraits=cupDone?champions.map(i=>RACER_POOL[i]):[winner];
-  winnerCanvas.hidden=portraits.length===0;
-  const columns=Math.ceil(Math.sqrt(portraits.length)),size=120/(columns||1),rows=Math.ceil(portraits.length/(columns||1));
-  portraits.forEach((portrait,i)=>{
-    const row=Math.floor(i/columns),rowCount=Math.min(columns,portraits.length-row*columns);
-    ctx.save();ctx.translate((120-rowCount*size)/2+(i%columns)*size,(120-rows*size)/2+row*size);
-    drawRacerFace(ctx,size,portrait.color,0,portrait.name===sim.racers[sim.youIdx].name,portrait.name);ctx.restore();
-  });
+  RacePresentation.presentWinner($("winner-swatch"),portraits,sim.racers[sim.youIdx].name,!sim.presented&&!timeout);
   $("winner-overlay").hidden=false;$("btn-pause").disabled=true;
+  if(!sim.presented){sim.presented=true;if(!timeout)RacePresentation.celebrate(frameBudget.tier);}
   if(!sim.recorded){
     sim.recorded=true;
     const key=GameSession.encode(sim.runConfig);
@@ -491,6 +540,8 @@ function frameCamera(){
   const selected=sim.racers[sim.youIdx];
   const target=(sim.complete&&sim.winner)||(sim.followYou&&selected?.active&&selected)||active.sort((a,b)=>progress(sim,a)-progress(sim,b))[0]||sim.winner;
   if(target)sim.cameraY=Math.max(0,Math.min((sim.worldH||sim.geo.imgH)-sim.viewportH,target.y-sim.viewportH*.42));
+  sim.previousCameraY=sim.cameraY;
+  RacePresentation.resetCamera(sim);
 }
 async function shareRace(){
   const key=GameSession.encode(state.lastRun);if(!key)return;
@@ -505,9 +556,18 @@ async function shareRace(){
 document.querySelectorAll("[data-nav]").forEach(el=>el.addEventListener("click",()=>showScreen(el.dataset.nav)));
 $("btn-play").addEventListener("click",()=>showScreen("mode"));
 $("btn-quick").addEventListener("click",startSelected);
+$("btn-cup").addEventListener("click",()=>{state.format="cup";showScreen("mode");});
+$("btn-motion").addEventListener("click",()=>{state.motion=motionReduced()?"full":"reduced";applyMotion();persist();announce(motionReduced()?"Motion reduced.":"Full motion enabled.");});
+motionQuery.addEventListener("change",()=>{if(state.motion==="auto")applyMotion();});
+$("btn-focus").addEventListener("click",()=>{
+  state.focusMode=!state.focusMode;document.body.classList.toggle("focus-mode",state.focusMode);
+  $("btn-focus").setAttribute("aria-pressed",String(state.focusMode));
+  $("btn-focus").setAttribute("aria-label",state.focusMode?"Show standings":"Expand track");
+  $("btn-focus").title=state.focusMode?"Show standings":"Expand track";fitCanvas();
+});
 document.querySelectorAll("[data-format]").forEach(el=>el.addEventListener("click",()=>{state.format=el.dataset.format;updateSetup();}));
 document.querySelectorAll("[data-speed]").forEach(el=>el.addEventListener("click",()=>setSpeed(Number(el.dataset.speed))));
-document.querySelectorAll("[data-enter-mode]").forEach(el=>el.addEventListener("click",()=>{state.mode=el.dataset.enterMode;showScreen("mode");}));
+document.querySelectorAll("[data-enter-mode]").forEach(el=>el.addEventListener("click",()=>{state.mode=el.dataset.enterMode;state.format="single";showScreen("mode");}));
 document.querySelectorAll("[data-mode]").forEach(el=>el.addEventListener("click",()=>{state.mode=el.dataset.mode;updateSetup();}));
 $("field-minus").addEventListener("click",()=>{state.fieldSize=Math.max(2,state.fieldSize-1);updateSetup();});
 $("field-plus").addEventListener("click",()=>{state.fieldSize=Math.min(8,state.fieldSize+1);updateSetup();});
@@ -530,7 +590,8 @@ $("camera-leader").addEventListener("click",()=>setCamera(false));
 $("camera-you").addEventListener("click",()=>setCamera(true));
 $("btn-share").addEventListener("click",shareRace);
 $("btn-sound").addEventListener("click",()=>{state.sound=!state.sound;if(!state.sound)silence();updateSoundButton();persist();tone(620,.1);});
-function openHelp(){if(state.screen==="race")pauseRace();$("help-dialog").showModal();}
+function openHelp(){if(state.screen==="race")pauseRace();RacePresentation.suspendWinner(true);lobbyPreview.sync(false);$("help-dialog").showModal();}
+$("help-dialog").addEventListener("close",()=>{lobbyPreview.sync(state.screen==="menu");RacePresentation.suspendWinner(document.hidden);});
 $("btn-help").addEventListener("click",openHelp);$("btn-how").addEventListener("click",openHelp);
 $("btn-close-help").addEventListener("click",()=>$("help-dialog").close());
 $("btn-help-play").addEventListener("click",()=>{$("help-dialog").close();if(state.screen==="race")resumeRace();else showScreen("mode");});
@@ -542,19 +603,26 @@ document.addEventListener("keydown",event=>{
     event.preventDefault();state.paused?resumeRace():pauseRace();
   }
 });
-document.addEventListener("visibilitychange",()=>{if(document.hidden)pauseRace();});
+document.addEventListener("visibilitychange",()=>{
+  if(document.hidden)pauseRace();
+  RacePresentation.suspendWinner(document.hidden||$("help-dialog").open);
+  lobbyPreview.sync(state.screen==="menu"&&!$("help-dialog").open);
+});
 window.addEventListener("storage",event=>{
   if(event.key!==null&&event.key!==STORAGE_KEY)return;
   refreshProgress();updateSession();
   if(state.screen==="menu")renderHistory();
 });
-window.addEventListener("resize",fitCanvas,{passive:true});
+window.addEventListener("resize",()=>{
+  if(resizeFrame===null&&state.screen==="race")resizeFrame=requestAnimationFrame(()=>{resizeFrame=null;fitCanvas();});
+},{passive:true});
 for(const racer of RACER_POOL){
   const portrait=new Image();racerPortraits.set(racer.name,portrait);
   portrait.src="assets/racers/"+racer.name.toLowerCase()+".png";
-  portrait.onload=()=>{if(state.screen==="race"&&state.sim)drawCurrent();};
+  portrait.onload=()=>{if(state.screen==="race"&&state.sim)drawCurrent();lobbyPreview.refresh();};
 }
 buildRacerGrid();buildArenaCards();updateSetup();updateSession();updateSoundButton();renderHistory();
+applyMotion();
 const sharedValue=new URLSearchParams(location.search).get("race");
 if(sharedValue){
   const shared=GameSession.decode(sharedValue);

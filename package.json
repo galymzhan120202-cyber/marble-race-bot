@@ -3,7 +3,8 @@
   "private": true,
   "description": "Local browser checks for the buildless Marble Race game",
   "scripts": {
-    "test": "node --test tests/web.test.cjs tests/session.test.cjs",
+    "dev": "node scripts/serve-game.mjs",
+    "test": "node --test tests/web.test.cjs tests/session.test.cjs tests/motion.test.cjs",
     "test:browser": "node tests/browser.test.mjs"
   },
   "devDependencies": {

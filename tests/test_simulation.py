@@ -24,8 +24,9 @@ def test_drop_obstacles_leave_clearance_around_spinning_blades(kind):
     pegs = sim._build_drop_pegs(kind, random.Random(17), left, right, top, finish, h, radius, peg_radius)
     assert pegs
     for x, y, _ in pegs:
-        for fraction, length in sim.DROP_ARENA_SPINNERS[kind]:
-            assert math.hypot(x-(left+right)/2, y-(top+(finish-top)*fraction)) >= (
+        for fraction, length, *offset in sim.DROP_ARENA_SPINNERS[kind]:
+            center = left + (right-left)*offset[0] if offset else (left+right)/2
+            assert math.hypot(x-center, y-(top+(finish-top)*fraction)) >= (
                 (right-left)*length/2 + peg_radius*1.8 + radius*2.5)
 
 

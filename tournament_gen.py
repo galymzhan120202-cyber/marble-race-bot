@@ -22,7 +22,7 @@ import traceback
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter
 from moviepy import (
-    ImageClip, AudioArrayClip, CompositeAudioClip, concatenate_videoclips,
+    ImageClip, VideoClip, AudioArrayClip, CompositeAudioClip, concatenate_videoclips,
 )
 from dotenv import load_dotenv
 
@@ -30,7 +30,9 @@ from race_sim import (
     simulate_race, build_race_clip, build_sfx_array, make_racer_icon, get_font,
     pick_theme, race_bump_times, RACER_POOL, SR as SFX_SR,
     build_cold_open_clip, build_cold_open_sfx,
+    _hud_portrait,
 )
+from video_motion import VICTORY_SECONDS, victory_tile
 from video_gen import (
     base_dir, send_telegram, ensure_directories_exist,
     pick_background_music, upload_to_youtube, cleanup_temp_files,
@@ -52,7 +54,7 @@ TITLE_CARD_SECONDS = 2.0
 HEAT_CARD_SECONDS = 1.4
 BRACKET_HOLD_SECONDS = 2.8
 CHAMPION_HOLD_SECONDS = 3.5
-OUTRO_SECONDS = 2.0
+OUTRO_SECONDS = VICTORY_SECONDS
 
 logging.basicConfig(
     level=logging.INFO,
@@ -162,10 +164,12 @@ def render_heat_card(round_label, heat_label, heat_racers, theme, w=TOUR_WIDTH, 
     return np.array(img.convert("RGB"))
 
 
-def render_outro_card(champion, theme, w=TOUR_WIDTH, h=TOUR_HEIGHT):
+def render_outro_card(champion, theme, w=TOUR_WIDTH, h=TOUR_HEIGHT, elapsed=0.0):
     img = _bg_canvas(theme, w, h)
     d = ImageDraw.Draw(img, "RGBA")
-    icon = make_racer_icon(champion["color"], int(h * 0.22), name=champion["name"])
+    size = int(h * .30)
+    icon = victory_tile(_hud_portrait(champion["name"], tuple(champion["color"]), size),
+                        champion["name"], elapsed, size)
     img.alpha_composite(icon, (int(w / 2 - icon.width / 2), int(h * 0.18)))
     title_font = get_font(int(h * 0.06))
     sub_font = get_font(int(h * 0.036))
@@ -386,7 +390,10 @@ def generate_tournament_video(skip_upload: bool = False):
 
         _append(_static_clip(render_bracket_board(bracket, theme, f"Champion: {champion['name']}!"),
                               CHAMPION_HOLD_SECONDS))
-        _append(_static_clip(render_outro_card(champion, theme), OUTRO_SECONDS))
+        outro = VideoClip(lambda time: render_outro_card(champion, theme, TOUR_WIDTH, TOUR_HEIGHT, elapsed=time),
+                          duration=OUTRO_SECONDS)
+        outro.fps = TOUR_FPS
+        _append(outro)
 
         final_video = concatenate_videoclips(clips, method="chain")
         final_video.fps = TOUR_FPS

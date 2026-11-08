@@ -1,30 +1,15 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
-import http from 'node:http';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
+import {createGameServer} from '../scripts/serve-game.mjs';
 
 const {chromium}=await import(process.env.MARBLE_PLAYWRIGHT_MODULE || 'playwright');
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const output=path.join(root,'.audit-work','ui-v2');
 let server;
 async function localTestServer(){
-  const directories=['web','assets'].map(name=>path.join(root,name)+path.sep);
-  const mime={'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.js':'text/javascript; charset=utf-8','.json':'application/json; charset=utf-8','.png':'image/png','.svg':'image/svg+xml','.jpg':'image/jpeg'};
-  server=http.createServer(async(request,response)=>{
-    try{
-      if(!['GET','HEAD'].includes(request.method)){response.writeHead(405);response.end();return;}
-      let pathname=decodeURIComponent(new URL(request.url,'http://localhost').pathname);
-      if(pathname==='/')pathname='/index.html';
-      const filename=path.resolve(root,'.'+pathname);
-      if(filename!==path.join(root,'index.html')&&!directories.some(directory=>filename.startsWith(directory))){
-        response.writeHead(404);response.end();return;
-      }
-      const data=await fs.readFile(filename);
-      response.writeHead(200,{'Content-Type':mime[path.extname(filename)]||'application/octet-stream','Cache-Control':'no-store'});
-      response.end(request.method==='HEAD'?undefined:data);
-    }catch{response.writeHead(404);response.end();}
-  });
+  server=createGameServer();
   await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(0,'127.0.0.1',resolve);});
   return 'http://127.0.0.1:'+server.address().port;
 }
@@ -209,13 +194,200 @@ async function lifecycleEdges(browser,url,errors){
   }finally{await context.close();}
 }
 
+async function presentationEdges(browser,url,errors){
+  const context=await browser.newContext({viewport:{width:1440,height:1000},reducedMotion:'no-preference'});
+  const page=await context.newPage();
+  page.on('pageerror',error=>errors.push({viewport:'presentation',message:error.message}));
+  page.setDefaultTimeout(8000);
+  try{
+    await page.goto(url,{waitUntil:'networkidle'});
+    await page.waitForFunction(()=>lobbyPreview.isRunning());
+    assert.equal(await page.evaluate(()=>document.fonts.check('40px RaceDisplay')),true,'the locally hosted display font loads');
+    const preview=()=>page.locator('#demo-canvas').evaluate(canvas=>canvas.toDataURL());
+    const initial=await preview();
+    await page.waitForFunction(frame=>document.querySelector('#demo-canvas').toDataURL()!==frame,initial);
+    assert.equal((await read(page)).races,0,'the lobby preview never counts as a played race');
+    assert.equal(await page.evaluate(()=>state.sim),null,'the lobby has an independent simulation');
+    await page.locator('#btn-demo').click();
+    const paused=await preview();
+    await page.waitForTimeout(120);
+    assert.equal(await preview(),paused,'the user can stop the automatic preview');
+    assert.equal(await page.evaluate(()=>lobbyPreview.isRunning()),false);
+    await page.locator('#btn-demo').click();
+    await page.waitForFunction(()=>lobbyPreview.isRunning());
+    await page.locator('#btn-help').click();
+    assert.equal(await page.evaluate(()=>lobbyPreview.isRunning()),false,'opening help suspends the preview');
+    await page.keyboard.press('Escape');
+    await page.waitForFunction(()=>lobbyPreview.isRunning());
+    await page.setViewportSize({width:1440,height:600});
+    await page.evaluate(()=>window.scrollTo({top:document.body.scrollHeight,behavior:'instant'}));
+    await page.waitForFunction(()=>!lobbyPreview.isRunning());
+    await page.setViewportSize({width:1440,height:1000});
+    await page.evaluate(()=>window.scrollTo({top:0,behavior:'instant'}));
+    await page.waitForFunction(()=>lobbyPreview.isRunning());
+    await page.emulateMedia({reducedMotion:'reduce'});
+    await page.waitForFunction(()=>document.body.dataset.motion==='reduced');
+    assert.equal(await page.evaluate(()=>lobbyPreview.isRunning()),false,'system reduced motion stops automatic movement');
+    await page.locator('#btn-motion').click();
+    await page.waitForFunction(()=>lobbyPreview.isRunning());
+    assert.equal(await page.evaluate(()=>document.body.dataset.motion),'full','an explicit preference overrides the system default');
+    await page.locator('#btn-cup').click();
+    assert.equal((await read(page)).format,'cup');
+    assert.equal(await page.evaluate(()=>lobbyPreview.isRunning()),false,'leaving the lobby stops its RAF');
+    await page.locator('.brand').click();
+    await page.locator('[data-enter-mode="race"]').click();
+    assert.equal((await read(page)).format,'single');
+    await page.locator('#btn-mode-next').click();
+    await page.locator('#btn-pause').click();
+    const width=await page.locator('#race-stage').evaluate(el=>el.clientWidth);
+    await page.locator('#btn-focus').click();
+    assert.ok(await page.locator('#race-stage').evaluate(el=>el.clientWidth)>width,'focus mode expands the real track');
+    assert.equal((await read(page)).paused,true,'changing track size cannot resume the race');
+    await page.locator('#btn-focus').click();
+    assert.ok(await page.locator('#course-map').evaluate(canvas=>canvas.getContext('2d').getImageData(0,0,canvas.width,canvas.height).data.some(value=>value!==0)),'the map draws the complete course');
+    await finish(page);
+    assert.equal(await page.locator('.confetti').count(),30);
+    assert.equal(await page.locator('.confetti').first().evaluate(el=>getComputedStyle(el).animationName),'confetti-fall','explicit full motion works even when the OS requests reduced motion');
+    await page.waitForFunction(()=>document.querySelectorAll('.confetti').length===0);
+    await page.evaluate(()=>showWinner(state.sim));
+    assert.equal(await page.locator('.confetti').count(),0,'repainting a result does not repeat the celebration');
+    await page.locator('#btn-motion').click();
+    await page.locator('.brand').click();
+    await page.reload({waitUntil:'networkidle'});
+    assert.equal(await page.evaluate(()=>document.body.dataset.motion),'reduced','motion preference survives reload');
+    assert.equal(await page.evaluate(()=>lobbyPreview.isRunning()),false);
+    assert.equal((await read(page)).races,1,'preview and presentation redraws cannot add results');
+    console.log('PASS presentation: live preview, pause/offscreen/help lifecycle, OS and saved motion, Cup shortcut, focus mode, radar, finite celebration');
+  }finally{await context.close();}
+}
+
+async function advancedMotionEdges(browser,url,errors){
+  const context=await browser.newContext({viewport:{width:1440,height:1000},reducedMotion:'no-preference'});
+  const page=await context.newPage();
+  page.on('pageerror',error=>errors.push({viewport:'advanced-motion',message:error.message}));
+  page.setDefaultTimeout(10000);
+  try{
+    await page.goto(url,{waitUntil:'networkidle'});
+    await page.evaluate(()=>{state.mode='drop';state.dropArena='blade_storm';state.fieldSize=8;startSelected();});
+    await page.waitForFunction(()=>state.sim.step>150);
+    const animated=await page.evaluate(()=>({view:state.sim.cameraView,
+      impacts:state.sim.racers.filter(r=>r.impact).length,quality:state.sim.effectsQuality}));
+    assert.ok(animated.view.zoom>=1&&animated.view.zoom<=1.12);
+    await page.locator('#btn-pause').click();
+    await capture(page,'1440x1000-motion-drop');
+    const still=await page.locator('#race-canvas').evaluate(canvas=>canvas.toDataURL());
+    await page.waitForTimeout(120);
+    assert.equal(await page.locator('#race-canvas').evaluate(canvas=>canvas.toDataURL()),still,'pause freezes camera and physical effects together');
+    await finish(page);
+    assert.equal(await page.evaluate(()=>RacePresentation.winnerStatus().running),true);
+    const portrait=()=>page.locator('#winner-swatch').evaluate(canvas=>canvas.toDataURL());
+    const first=await portrait();
+    await page.waitForFunction(frame=>document.querySelector('#winner-swatch').toDataURL()!==frame,first);
+    await page.screenshot({path:path.join(output,'1440x1000-victory-gesture.png'),fullPage:true});
+    await page.locator('#btn-help').click();
+    assert.equal(await page.evaluate(()=>RacePresentation.winnerStatus().running),false);
+    const stopped=await portrait();await page.waitForTimeout(120);assert.equal(await portrait(),stopped);
+    await page.keyboard.press('Escape');
+    await page.waitForFunction(()=>RacePresentation.winnerStatus().running);
+    await page.evaluate(()=>{Object.defineProperty(document,'hidden',{configurable:true,value:true});document.dispatchEvent(new Event('visibilitychange'));});
+    assert.equal(await page.evaluate(()=>RacePresentation.winnerStatus().running),false,'hidden tabs suspend the separate victory clock');
+    await page.evaluate(()=>{delete document.hidden;document.dispatchEvent(new Event('visibilitychange'));});
+    await page.waitForFunction(()=>!RacePresentation.winnerStatus().running);
+    assert.equal(await page.evaluate(()=>RacePresentation.winnerStatus().elapsed),3.2,'victory animation always settles');
+    const races=(await read(page)).races;
+    await page.evaluate(()=>RacePresentation.presentWinner(document.querySelector('#winner-swatch'),[RACER_POOL[12]],'Lime',true));
+    await page.waitForFunction(()=>RacePresentation.winnerStatus().running);
+    await page.locator('#btn-motion').click();
+    assert.equal(await page.evaluate(()=>RacePresentation.winnerStatus().running),false,'reduced motion stops a gesture immediately');
+    assert.equal(await page.evaluate(()=>renderView(state.sim).zoom),1);
+    assert.equal(await page.locator('.confetti').count(),0);
+    await page.locator('.brand').click();
+    assert.equal(await page.evaluate(()=>RacePresentation.winnerStatus().running),false);
+    assert.equal((await read(page)).races,races,'gestures cannot add wins or races');
+  }finally{await context.close();}
+
+  const mobile=await browser.newContext({viewport:{width:390,height:844},deviceScaleFactor:3,hasTouch:true,isMobile:true,reducedMotion:'no-preference'});
+  const phone=await mobile.newPage();
+  phone.on('pageerror',error=>errors.push({viewport:'motion-mobile-3x',message:error.message}));
+  phone.setDefaultTimeout(30000);
+  try{
+    await phone.goto(url,{waitUntil:'networkidle'});
+    const cdp=await mobile.newCDPSession(phone);
+    await cdp.send('Emulation.setCPUThrottlingRate',{rate:4});
+    await phone.evaluate(()=>{state.mode='race';state.mazeArena='switchback';state.arenaSize='l';state.fieldSize=8;startSelected();});
+    await phone.waitForFunction(()=>state.phase==='racing'&&state.sim.step>60);
+    await phone.evaluate(()=>{
+      window.motionProbe={intervals:[],costs:[],last:0};window.unmeasuredLoop=loop;
+      loop=function(now){
+        const start=performance.now();window.unmeasuredLoop(now);
+        if(window.motionProbe.last)window.motionProbe.intervals.push(now-window.motionProbe.last);
+        window.motionProbe.last=now;window.motionProbe.costs.push(performance.now()-start);
+      };
+    });
+    await phone.waitForFunction(()=>window.motionProbe.costs.length>=120||state.phase==='finished');
+    const performanceReport=await phone.evaluate(()=>{
+      loop=window.unmeasuredLoop;
+      const percentile=(values,p)=>[...values].sort((a,b)=>a-b)[Math.floor((values.length-1)*p)]||0;
+      return {deviceScaleFactor:devicePixelRatio,cpuThrottle:4,frames:window.motionProbe.costs.length,
+        workMedianMs:percentile(window.motionProbe.costs,.5),workP95Ms:percentile(window.motionProbe.costs,.95),
+        intervalMedianMs:percentile(window.motionProbe.intervals,.5),intervalP95Ms:percentile(window.motionProbe.intervals,.95),
+        quality:frameBudget.tier,pixels:canvas.width*canvas.height,pixelBudget:frameBudget.settings.pixels,
+        bumps:state.sim.bumps.length,trails:state.sim.racers.map(r=>r.trail?.length||0)};
+    });
+    await cdp.send('Emulation.setCPUThrottlingRate',{rate:1});
+    assert.ok(performanceReport.frames>15,'sample actual full-motion race frames');
+    assert.ok(performanceReport.pixels<=performanceReport.pixelBudget+2000,'high-DPI rendering respects the adaptive pixel budget');
+    assert.ok(performanceReport.quality<=1&&performanceReport.bumps<=64&&performanceReport.trails.every(n=>n<=18));
+    if((await read(phone)).phase!=='finished')await phone.locator('#btn-pause').click();
+    await capture(phone,'390x844-motion-3x');
+    await fs.writeFile(path.join(output,'motion-performance.json'),JSON.stringify(performanceReport,null,2)+'\n');
+    console.log('PASS advanced motion: camera/impact pause, winner lifecycle, reduced motion, 3x mobile buffers and 4x CPU sample '+JSON.stringify(performanceReport));
+  }finally{await mobile.close();}
+}
+
+async function newArenaEdges(browser,url,viewport,errors){
+  const context=await browser.newContext({viewport,reducedMotion:'reduce',hasTouch:viewport.width!==1440});
+  const page=await context.newPage(),label=`${viewport.width}x${viewport.height}`;
+  page.on('pageerror',error=>errors.push({viewport:label+'-new-arenas',message:error.message}));
+  try{
+    await page.goto(url,{waitUntil:'networkidle'});
+    for(const [mode,arena] of [['race','aurora_loops'],['race','pulse_grid'],['drop','diamond_drift'],['drop','pinwheel_pass']]){
+      await page.locator('#btn-play').click();
+      await page.locator(`[data-mode="${mode}"]`).click();
+      const card=page.locator(`[data-arena="${arena}"]`);
+      assert.equal(await card.locator('.arena-new').textContent(),'NEW');
+      await card.click();
+      assert.equal(await card.getAttribute('aria-pressed'),'true');
+      if(arena==='pulse_grid'||arena==='pinwheel_pass')await capture(page,label+'-new-'+mode+'-arenas');
+      await page.locator('#btn-mode-next').click();
+      const result=await finish(page);
+      assert.ok(result.winner,'new arena must produce a real finisher');
+      assert.equal(await page.evaluate(()=>state.sim.arenaKind),arena);
+      const link=await page.evaluate(()=>GameSession.encode(state.lastRun));
+      await page.locator('#btn-replay').click();
+      assert.deepEqual(await finish(page),result,'new arena replays must have identical physical results');
+      await page.goto(url+'?race='+encodeURIComponent(link),{waitUntil:'networkidle'});
+      assert.equal(await page.evaluate(()=>state.sim.arenaKind),arena);
+      assert.deepEqual(await finish(page),result,'shared new arenas must retain their geometry and finish');
+      await page.locator('.brand').click();
+    }
+    await page.reload({waitUntil:'networkidle'});
+    assert.equal((await read(page)).dropArena,'pinwheel_pass');
+    assert.equal((await read(page)).races,4,'replays and shares cannot inflate new arena statistics');
+    console.log(`PASS ${label}: four new arena selections, exact replay/share results and persistence`);
+  }finally{await context.close();}
+}
+
 try{
   browser=await chromium.launch({headless:true,...(process.env.MARBLE_BROWSER_PATH?{executablePath:process.env.MARBLE_BROWSER_PATH}:{})});
   if(server){
-    for(const route of ['/race_sim.py','/web/%2e%2e/race_sim.py','/assets/%2e%2e/race_sim.py']){
+    for(const route of ['/race_sim.py','/.env','/.git/config','/web/%2e%2e/race_sim.py','/assets/%2e%2e/race_sim.py','/fonts/%2e%2e/race_sim.py']){
       const response=await fetch(url+route);
       assert.equal(response.status,404,'the test server must not expose files outside its public routes');
     }
+    assert.equal((await fetch(url,{method:'POST'})).status,405);
+    const font=await fetch(url+'/fonts/Anton-Regular.ttf',{method:'HEAD'});
+    assert.equal(font.status,200);assert.equal(font.headers.get('content-type'),'font/ttf');
   }
   for(const viewport of [{width:1440,height:1000},{width:390,height:844},{width:360,height:640},{width:844,height:390}].filter(v=>!process.env.MARBLE_TEST_VIEWPORT||`${v.width}x${v.height}`===process.env.MARBLE_TEST_VIEWPORT)){
     const label=`${viewport.width}x${viewport.height}`;
@@ -260,8 +432,8 @@ try{
       await page.locator('#btn-play').click();
       assert.equal((await read(page)).screen,'mode');
       assert.equal(await page.locator('.racer-card').count(),16);
-      assert.equal(await page.locator('#arena-choices-race .arena-card').count(),4);
-      assert.equal(await page.locator('#arena-choices-drop .arena-card').count(),6);
+      assert.equal(await page.locator('#arena-choices-race .arena-card').count(),6);
+      assert.equal(await page.locator('#arena-choices-drop .arena-card').count(),8);
       const catalog=await page.evaluate(()=>RACER_IDENTITIES);
       assert.equal(Object.keys(catalog).length,16,'all original racers have a character identity');
       assert.equal(new Set(Object.values(catalog).map(identity=>identity.kind)).size,16,'every racer has its own object identity');
@@ -530,8 +702,11 @@ try{
         await page.evaluate(value=>localStorage.setItem('marble-race-v2',value),originalStorage);
         await page.reload({waitUntil:'networkidle'});
         await lifecycleEdges(browser,url,errors);
+        await presentationEdges(browser,url,errors);
+        await advancedMotionEdges(browser,url,errors);
       }
-      results.push({viewport:label,status:'passed',mazeWinner:result.winner,dropWinner:dropResult.winner,stats:5});
+      await newArenaEdges(browser,url,viewport,errors);
+      results.push({viewport:label,status:'passed',mazeWinner:result.winner,dropWinner:dropResult.winner,stats:5,newArenas:4});
       console.log(`PASS ${label}: quick start, identities, live controls, Cup podium, replay/share, history, timeout, persistence`);
     }catch(error){
       await page.screenshot({path:path.join(output,label+'-failure.png'),fullPage:true}).catch(()=>{});

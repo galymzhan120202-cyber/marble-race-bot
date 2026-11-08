@@ -42,7 +42,7 @@ def test_peg_gates_cover_straight_side_routes_without_trapping_wall_slots(kind, 
         assert wall_distance <= radius*.6 or wall_distance >= radius*2.4
 
 
-@pytest.mark.parametrize("kind", ["split_cascade", "orbit_run"])
+@pytest.mark.parametrize("kind", ["split_cascade", "orbit_run", "diamond_drift", "pinwheel_pass"])
 def test_selected_new_drop_arenas_replay_exactly_across_render_rates(kind):
     first = sim.simulate_drop(1080, 1920, 41, n_racers=6, arena_kind=kind, fps=24)
     replay = sim.simulate_drop(1080, 1920, 41, n_racers=6, arena_kind=kind, fps=24)
